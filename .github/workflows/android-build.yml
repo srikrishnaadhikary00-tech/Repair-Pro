@@ -30,6 +30,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
       - name: Build APK and AAB
         run: |
+          cd extracted
           gradle --no-daemon assembleDebug
           gradle --no-daemon bundleRelease
 
