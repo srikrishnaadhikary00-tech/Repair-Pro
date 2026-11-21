@@ -6,76 +6,113 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "Krishna--main.zip"
+      - ".github/workflows/android-build.yml"
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build Android
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
     steps:
-      - name: Checkout project
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Install Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Extract Android project
-        run: |
-          mkdir -p extracted
-          unzip -q "Krishna--main.zip" -d extracted
-
-      - name: Locate Android project
-        id: locate
+      - name: Verify Android SDK
         shell: bash
         run: |
-          set -e
-          FILE=$(find extracted -name settings.gradle.kts -o -name settings.gradle | head -n 1)
+          set -euo pipefail
+          echo "Android SDK: ${ANDROID_HOME:-not set}"
+          test -d "$ANDROID_HOME"
+          echo "SDK directory exists"
+
+      - name: Extract Repair Pro
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "Krishna--main.zip"
+          mkdir -p extracted
+          unzip -q "Krishna--main.zip" -d extracted
+          echo "Project extracted successfully"
+
+      - name: Find Gradle project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE=$(find extracted -type f \
+            \( -name settings.gradle.kts \
+            -o -name settings.gradle \) \
+            -print -quit)
+
           if [ -z "$FILE" ]; then
-            echo "Android Gradle project not found"
+            echo "::error::Gradle project not found"
             exit 1
           fi
+
           DIR=$(dirname "$FILE")
-          echo "project_dir=$DIR" >> "$GITHUB_OUTPUT"
-          echo "Android project: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Project directory: $DIR"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Build Debug APK
         shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          cd "${{ steps.locate.outputs.project_dir }}"
-          chmod +x gradlew 2>/dev/null || true
+          set -euo pipefail
+
           if [ -f gradlew ]; then
-            ./gradlew --no-daemon assembleDebug
+            chmod +x gradlew
+            ./gradlew --no-daemon --stacktrace assembleDebug
           else
-            gradle --no-daemon assembleDebug
+            gradle --no-daemon --stacktrace assembleDebug
           fi
+
+      - name: Upload Debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Repair-Pro-Debug-APK
+          path: extracted/**/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Build Release AAB
+        if: success()
         continue-on-error: true
         shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          cd "${{ steps.locate.outputs.project_dir }}"
+          set -euo pipefail
+
           if [ -f gradlew ]; then
-            ./gradlew --no-daemon bundleRelease
+            ./gradlew --no-daemon --stacktrace bundleRelease
           else
-            gradle --no-daemon bundleRelease
+            gradle --no-daemon --stacktrace bundleRelease
           fi
 
-      - name: Upload APK
+      - name: Upload Release AAB
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Repair-Pro-APK
-          path: extracted/**/build/outputs/apk/**/*.apk
-          if-no-files-found: error
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: Repair-Pro-AAB-Unsigned
-          path: extracted/**/build/outputs/bundle/**/*.aab
-          if-no-files-found: warn
+          name: Repair-Pro-Release-AAB
+          path: extracted/**/build/outputs/bundle/release/*.aab
+          if-no-files-found: ignore
+          retention-days: 14
