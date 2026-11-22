@@ -142,7 +142,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          EXPECTED="237974DA7AFECAEA0E6A6EB8F1E084E58DBBAAB0"
+          EXPECTED="07CF7BB92F7231A4D8D7728D2716F97C9B41ABD2"
 
           ACTUAL="$(keytool -list -v \
             -keystore debug.keystore \
