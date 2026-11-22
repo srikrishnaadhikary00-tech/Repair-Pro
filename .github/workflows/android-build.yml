@@ -29,9 +29,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Extract Updated Repair Pro Project
         id: project
         shell: bash
@@ -41,7 +38,7 @@ jobs:
           ZIP="Repair-Pro-v1.1-GitHub-Ready.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::Updated ZIP not found: $ZIP"
+            echo "::error::Updated ZIP not found"
             exit 1
           fi
 
@@ -66,10 +63,22 @@ jobs:
           PROJECT="$(cd "$PROJECT" && pwd)"
 
           echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
-          echo "Project directory: $PROJECT"
+          echo "Using project: $PROJECT"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ANDROID_HOME:-}" ]; then
+            echo "::error::ANDROID_HOME is not configured"
+            exit 1
+          fi
+
+          echo "Android SDK found"
 
       - name: Restore Firebase Configuration
         shell: bash
@@ -85,8 +94,8 @@ jobs:
           fi
 
           if [ ! -s app/google-services.json ]; then
-            echo "::error::Firebase google-services.json missing"
-            echo "Configure GOOGLE_SERVICES_JSON_BASE64 secret"
+            echo "::error::Missing Firebase configuration"
+            echo "Set GOOGLE_SERVICES_JSON_BASE64 secret"
             exit 1
           fi
 
@@ -116,7 +125,7 @@ jobs:
             -alias androiddebugkey \
             > /dev/null
 
-      - name: Verify Debug Signing Certificate
+      - name: Verify Existing Signing Certificate
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
@@ -135,13 +144,13 @@ jobs:
             | tr '[:lower:]' '[:upper:]')"
 
           if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "::error::Signing certificate does not match old debug APK"
+            echo "::error::Signing key does not match old APK"
             exit 1
           fi
 
-          echo "Existing debug signing certificate verified"
+          echo "Old APK signing certificate verified"
 
-      - name: Build Updated Debug APK
+      - name: Build Debug APK
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
@@ -154,7 +163,7 @@ jobs:
             gradle --no-daemon assembleDebug
           fi
 
-      - name: Upload Updated Debug APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: Repair-Pro-v1.1-Update-APK
@@ -176,7 +185,7 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Release signing not configured; skipping AAB"
+            echo "Release signing secrets not configured"
           fi
 
       - name: Restore Release Keystore
