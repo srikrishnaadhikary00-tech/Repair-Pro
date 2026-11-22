@@ -1,1 +1,52 @@
 
+name: Create Repair Pro Upload Key
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate-key:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Generate Upload Key
+        shell: bash
+        env:
+          KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$KEY_PASSWORD" ]; then
+            echo "Missing signing password secret"
+            exit 1
+          fi
+
+          keytool -genkeypair \
+            -keystore my-upload-key.jks \
+            -storetype PKCS12 \
+            -alias upload \
+            -keyalg RSA \
+            -keysize 4096 \
+            -validity 10000 \
+            -storepass:env KEY_PASSWORD \
+            -keypass:env KEY_PASSWORD \
+            -dname "CN=Repair Pro, OU=Mobile, O=Repair Pro, C=IN" \
+            -noprompt
+
+      - name: Upload JKS File
+        uses: actions/upload-artifact@v4
+        with:
+          name: Repair-Pro-Upload-Key
+          path: my-upload-key.jks
+          retention-days: 1
+          if-no-files-found: error
+
