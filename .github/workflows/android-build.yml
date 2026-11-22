@@ -195,7 +195,7 @@ jobs:
           KEYSTORE: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
           KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
+          KEY_ALIAS: upload
         run: |
           set -euo pipefail
 
@@ -217,7 +217,7 @@ jobs:
           KEYSTORE: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
           KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
+          KEY_ALIAS: upload
         run: |
           set -euo pipefail
 
@@ -247,17 +247,17 @@ jobs:
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         env:
-          REPAIR_PRO_STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
-          REPAIR_PRO_KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
-          REPAIR_PRO_KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
+          KEYSTORE_PATH: ${{ steps.project.outputs.dir }}/my-upload-key.jks
+          STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew --no-daemon bundleRelease --stacktrace
+            ./gradlew --no-daemon bundleRelease --stacktrace --no-configuration-cache
           else
-            gradle --no-daemon bundleRelease --stacktrace
+            gradle --no-daemon bundleRelease --stacktrace --no-configuration-cache
           fi
 
       - name: Upload Release AAB
