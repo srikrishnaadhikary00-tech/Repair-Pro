@@ -1,29 +1,26 @@
 
-name: Build Repair Pro APK and AAB
+name: Build Repair Pro Android APK
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
-    paths:
-      - "Krishna--main.zip"
-      - ".github/workflows/android-build.yml"
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Android
+    name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     env:
-      GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Install Java 17
@@ -32,45 +29,73 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Verify Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Android SDK: ${ANDROID_HOME:-not set}"
-          test -d "$ANDROID_HOME"
-          echo "SDK directory exists"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Extract Repair Pro
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f "Krishna--main.zip"
-          mkdir -p extracted
-          unzip -q "Krishna--main.zip" -d extracted
-          echo "Project extracted successfully"
-
-      - name: Find Gradle project
+      - name: Extract Repair Pro Project
         id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          FILE=$(find extracted -type f \
-            \( -name settings.gradle.kts \
-            -o -name settings.gradle \) \
-            -print -quit)
+          mkdir -p extracted
+
+          ZIP=$(find . -maxdepth 1 -type f \
+            -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: ZIP file not found"
+            exit 1
+          fi
+
+          echo "Extracting: $ZIP"
+          unzip -q "$ZIP" -d extracted
+
+          FILE=$(find extracted \
+            -name settings.gradle.kts \
+            -o -name settings.gradle | head -n 1)
 
           if [ -z "$FILE" ]; then
-            echo "::error::Gradle project not found"
+            echo "ERROR: Android project not found"
             exit 1
           fi
 
           DIR=$(dirname "$FILE")
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
-          echo "Project directory: $DIR"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+          echo "Project directory: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME"
+
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --licenses > /dev/null || true
+
+      - name: Create Debug Keystore
+        shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair \
+              -keystore debug.keystore \
+              -storepass android \
+              -keypass android \
+              -alias androiddebugkey \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -noprompt
+          fi
+
+          echo "Debug keystore ready"
 
       - name: Build Debug APK
         shell: bash
@@ -80,9 +105,11 @@ jobs:
 
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew --no-daemon --stacktrace assembleDebug
+            ./gradlew --no-daemon \
+              --stacktrace assembleDebug
           else
-            gradle --no-daemon --stacktrace assembleDebug
+            gradle --no-daemon \
+              --stacktrace assembleDebug
           fi
 
       - name: Upload Debug APK
@@ -92,27 +119,4 @@ jobs:
           name: Repair-Pro-Debug-APK
           path: extracted/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-          retention-days: 14
-
-      - name: Build Release AAB
-        if: success()
-        continue-on-error: true
-        shell: bash
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: |
-          set -euo pipefail
-
-          if [ -f gradlew ]; then
-            ./gradlew --no-daemon --stacktrace bundleRelease
-          else
-            gradle --no-daemon --stacktrace bundleRelease
-          fi
-
-      - name: Upload Release AAB
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Repair-Pro-Release-AAB
-          path: extracted/**/build/outputs/bundle/release/*.aab
-          if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 30
