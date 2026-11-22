@@ -36,36 +36,32 @@ jobs:
           set -euo pipefail
 
           ZIP="Repair-Pro-v1.1-GitHub-Ready.zip"
-
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::ZIP file not found: $ZIP"
+          test -f "$ZIP" || {
+            echo "::error::Project ZIP missing"
             exit 1
-          fi
+          }
 
           mkdir -p extracted
           unzip -oq "$ZIP" -d extracted
 
           SETTINGS="$(find extracted -type f \
-            \( -name settings.gradle.kts -o -name settings.gradle \) \
+            \( -name settings.gradle.kts \
+            -o -name settings.gradle \) \
             -print -quit)"
 
-          if [ -z "$SETTINGS" ]; then
-            echo "::error::Android project not found"
+          test -n "$SETTINGS" || {
+            echo "::error::Android project missing"
             exit 1
-          fi
+          }
 
           PROJECT="$(dirname "$SETTINGS")"
-
-          if [ ! -f "$PROJECT/app/build.gradle.kts" ] && \
-             [ ! -f "$PROJECT/app/build.gradle" ]; then
-            echo "::error::App Gradle file missing"
-            exit 1
-          fi
-
           PROJECT="$(cd "$PROJECT" && pwd)"
 
+          test -f "$PROJECT/app/build.gradle.kts" \
+            || test -f "$PROJECT/app/build.gradle"
+
           echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
-          echo "Project: $PROJECT"
+          echo "Project found"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -74,8 +70,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -d "${ANDROID_HOME:?ANDROID_HOME missing}"
-          echo "Android SDK available"
+          test -d "${ANDROID_HOME:?Android SDK missing}"
+          echo "Android SDK ready"
 
       - name: Restore Firebase Configuration
         shell: bash
@@ -87,19 +83,18 @@ jobs:
 
           if [ -n "$FIREBASE_JSON" ]; then
             printf '%s' "$FIREBASE_JSON" \
-              | base64 --decode \
-              > app/google-services.json
+              | base64 --decode > app/google-services.json
           fi
 
-          if [ ! -s app/google-services.json ]; then
+          test -s app/google-services.json || {
             echo "::error::Firebase JSON missing"
             exit 1
-          fi
+          }
 
           python3 -m json.tool \
             app/google-services.json > /dev/null
 
-          echo "Firebase configuration ready"
+          echo "Firebase ready"
 
       - name: Prepare Debug Keystore
         id: debug_key
@@ -111,20 +106,14 @@ jobs:
           set -euo pipefail
 
           if [ -n "$DEBUG_KEY" ]; then
-            echo "Restoring existing debug keystore"
-
             printf '%s' "$DEBUG_KEY" \
               | base64 --decode > debug.keystore
-
             echo "existing=true" >> "$GITHUB_OUTPUT"
 
           elif [ -s debug.keystore ]; then
-            echo "Using project debug keystore"
             echo "existing=true" >> "$GITHUB_OUTPUT"
 
           else
-            echo "Generating new debug keystore"
-
             keytool -genkeypair \
               -keystore debug.keystore \
               -storetype PKCS12 \
@@ -144,8 +133,6 @@ jobs:
             -keystore debug.keystore \
             -storepass android \
             -alias androiddebugkey > /dev/null
-
-          echo "Debug keystore ready"
 
       - name: Verify Debug Certificate
         shell: bash
@@ -167,19 +154,17 @@ jobs:
             | tr -d ' :\r\n' \
             | tr '[:lower:]' '[:upper:]')"
 
-          echo "Debug certificate SHA1: $ACTUAL"
+          echo "Debug SHA1: $ACTUAL"
 
           if [ "$EXISTING" = "true" ]; then
             if [ "$ACTUAL" != "$EXPECTED" ]; then
-              echo "::error::Existing debug certificate mismatch"
+              echo "::error::Debug certificate mismatch"
               exit 1
             fi
-
-            echo "Original debug certificate verified"
           else
-            echo "::warning::A new debug signing certificate was generated"
-            echo "::warning::Check Firebase SHA-1 before testing Google Login"
-            echo "::warning::This APK may not update an older installation"
+            echo "::warning::New debug certificate generated"
+            echo "::warning::Firebase SHA-1 may need updating"
+            echo "::warning::Older APK may not be updatable"
           fi
 
       - name: Build Debug APK
@@ -190,9 +175,9 @@ jobs:
 
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew --no-daemon assembleDebug
+            ./gradlew --no-daemon assembleDebug --stacktrace
           else
-            gradle --no-daemon assembleDebug
+            gradle --no-daemon assembleDebug --stacktrace
           fi
 
       - name: Upload Debug APK
@@ -214,12 +199,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -n "$KEYSTORE" ] && \
-             [ -n "$STORE_PASS" ] && \
-             [ -n "$KEY_PASS" ] && \
-             [ -n "$KEY_ALIAS" ]; then
+          if [ -n "$KEYSTORE" ] \
+            && [ -n "$STORE_PASS" ] \
+            && [ -n "$KEY_PASS" ] \
+            && [ -n "$KEY_ALIAS" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "Release signing secrets available"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Release signing secrets incomplete"
@@ -232,6 +216,7 @@ jobs:
         env:
           KEYSTORE: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
         run: |
           set -euo pipefail
@@ -246,7 +231,16 @@ jobs:
             -storepass "$STORE_PASS" \
             -alias "$KEY_ALIAS" > /dev/null
 
-          echo "Release keystore verified"
+          keytool -certreq \
+            -keystore my-upload-key.jks \
+            -storepass "$STORE_PASS" \
+            -alias "$KEY_ALIAS" \
+            -keypass "$KEY_PASS" \
+            -file /tmp/repair-pro-key-check.csr
+
+          rm -f /tmp/repair-pro-key-check.csr
+
+          echo "Release keystore and key verified"
 
       - name: Build Signed Release AAB
         if: steps.signing.outputs.ready == 'true'
@@ -261,9 +255,9 @@ jobs:
 
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew --no-daemon bundleRelease
+            ./gradlew --no-daemon bundleRelease --stacktrace
           else
-            gradle --no-daemon bundleRelease
+            gradle --no-daemon bundleRelease --stacktrace
           fi
 
       - name: Upload Release AAB
