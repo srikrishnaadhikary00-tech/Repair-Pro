@@ -46,8 +46,7 @@ jobs:
           unzip -oq "$ZIP" -d extracted
 
           SETTINGS="$(find extracted -type f \
-            \( -name settings.gradle.kts -o \
-               -name settings.gradle \) \
+            \( -name settings.gradle.kts -o -name settings.gradle \) \
             -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
@@ -100,7 +99,10 @@ jobs:
           python3 -m json.tool \
             app/google-services.json > /dev/null
 
-      - name: Restore Debug Keystore
+          echo "Firebase configuration ready"
+
+      - name: Prepare Debug Keystore
+        id: debug_key
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         env:
@@ -108,22 +110,48 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "$DEBUG_KEY" ]; then
-            echo "::error::DEBUG_KEYSTORE_BASE64 missing"
-            exit 1
-          fi
+          if [ -n "$DEBUG_KEY" ]; then
+            echo "Restoring existing debug keystore"
 
-          printf '%s' "$DEBUG_KEY" \
-            | base64 --decode > debug.keystore
+            printf '%s' "$DEBUG_KEY" \
+              | base64 --decode > debug.keystore
+
+            echo "existing=true" >> "$GITHUB_OUTPUT"
+
+          elif [ -s debug.keystore ]; then
+            echo "Using project debug keystore"
+            echo "existing=true" >> "$GITHUB_OUTPUT"
+
+          else
+            echo "Generating new debug keystore"
+
+            keytool -genkeypair \
+              -keystore debug.keystore \
+              -storetype PKCS12 \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -noprompt
+
+            echo "existing=false" >> "$GITHUB_OUTPUT"
+          fi
 
           keytool -list \
             -keystore debug.keystore \
             -storepass android \
             -alias androiddebugkey > /dev/null
 
+          echo "Debug keystore ready"
+
       - name: Verify Debug Certificate
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          EXISTING: ${{ steps.debug_key.outputs.existing }}
         run: |
           set -euo pipefail
 
@@ -139,12 +167,20 @@ jobs:
             | tr -d ' :\r\n' \
             | tr '[:lower:]' '[:upper:]')"
 
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "::error::Debug signing certificate mismatch"
-            exit 1
-          fi
+          echo "Debug certificate SHA1: $ACTUAL"
 
-          echo "Debug certificate verified"
+          if [ "$EXISTING" = "true" ]; then
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "::error::Existing debug certificate mismatch"
+              exit 1
+            fi
+
+            echo "Original debug certificate verified"
+          else
+            echo "::warning::A new debug signing certificate was generated"
+            echo "::warning::Check Firebase SHA-1 before testing Google Login"
+            echo "::warning::This APK may not update an older installation"
+          fi
 
       - name: Build Debug APK
         shell: bash
@@ -183,6 +219,7 @@ jobs:
              [ -n "$KEY_PASS" ] && \
              [ -n "$KEY_ALIAS" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "Release signing secrets available"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Release signing secrets incomplete"
@@ -208,6 +245,8 @@ jobs:
             -keystore my-upload-key.jks \
             -storepass "$STORE_PASS" \
             -alias "$KEY_ALIAS" > /dev/null
+
+          echo "Release keystore verified"
 
       - name: Build Signed Release AAB
         if: steps.signing.outputs.ready == 'true'
