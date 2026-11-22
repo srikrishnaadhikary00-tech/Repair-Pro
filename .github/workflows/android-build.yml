@@ -16,9 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
-    env:
-      GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g"
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -27,69 +24,72 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Set up Gradle
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Extract Repair Pro Project
+      - name: Extract Android Project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p extracted
+
+          unzip -q Krishna--main.zip -d extracted
+
+          echo "Project extracted"
+
+      - name: Locate Android Project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p extracted
-          ZIP="Krishna--main.zip"
 
-          if [ ! -f "$ZIP" ]; then
-            echo "ZIP file not found"
-            exit 1
-          fi
+          PROJECT_DIR=$(find extracted -type f \
+            -name settings.gradle.kts -o \
+            -name settings.gradle | head -n 1)
 
-          unzip -q "$ZIP" -d extracted
-
-          FILE=$(find extracted -type f \
-            \( -name settings.gradle.kts -o -name settings.gradle \) \
-            -print -quit)
-
-          if [ -z "$FILE" ]; then
+          if [ -z "$PROJECT_DIR" ]; then
             echo "Android project not found"
             exit 1
           fi
 
-          DIR=$(dirname "$FILE")
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          PROJECT_DIR=$(dirname "$PROJECT_DIR")
 
-      - name: Verify Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -d "$ANDROID_HOME"
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            --licenses > /dev/null || true
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Create Debug Keystore
+          echo "Android project: $PROJECT_DIR"
+
+      - name: Restore Release Keystore
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-          if [ ! -f debug.keystore ]; then
-            keytool -genkeypair \
-              -keystore debug.keystore \
-              -storepass android \
-              -keypass android \
-              -alias androiddebugkey \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US" \
-              -noprompt
+
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "Keystore secret is missing"
+            exit 1
           fi
+
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode > my-upload-key.jks
+
+          test -s my-upload-key.jks
+
+          echo "Keystore restored"
 
       - name: Build Debug APK
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
           set -euo pipefail
+
           if [ -f gradlew ]; then
             chmod +x gradlew
             ./gradlew --no-daemon assembleDebug
@@ -107,9 +107,17 @@ jobs:
       - name: Build Release AAB
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          REPAIR_PRO_STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
+          REPAIR_PRO_KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
+          REPAIR_PRO_KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
         run: |
           set -euo pipefail
+
+          test -s my-upload-key.jks
+
           if [ -f gradlew ]; then
+            chmod +x gradlew
             ./gradlew --no-daemon bundleRelease
           else
             gradle --no-daemon bundleRelease
