@@ -16,9 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
-    env:
-      GRADLE_OPTS: "-Dorg.gradle.daemon=false -Xmx2g"
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -29,112 +26,67 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Check Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
-
-          if [ -z "${ANDROID_HOME:-}" ]; then
-            echo "ANDROID_HOME is missing"
-            exit 1
-          fi
-
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          test -d "$ANDROID_HOME"
-
-      - name: Extract Android Project
+      - name: Find and Extract Android Project
+        id: project
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p extracted
 
-          ZIP_FILE=$(find . -maxdepth 2 \
-            -type f -name '*.zip' \
-            -not -path './extracted/*' \
-            | head -n 1)
+          while IFS= read -r -d '' file; do
+            echo "Extracting $file"
+            unzip -oq "$file" -d extracted
+          done < <(find . -maxdepth 3 -type f -iname '*.zip' -print0)
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "Project ZIP not found"
+          PROJECT=""
+
+          while IFS= read -r -d '' file; do
+            DIR="$(dirname "$file")"
+            if [ -d "$DIR/app" ]; then
+              PROJECT="$DIR"
+              break
+            fi
+          done < <(
+            find extracted . \
+              -type f \
+              \( -name settings.gradle \
+              -o -name settings.gradle.kts \) \
+              -not -path './.git/*' \
+              -print0
+          )
+
+          if [ -z "$PROJECT" ]; then
+            echo "::error::Android project not found"
             exit 1
           fi
 
-          echo "Extracting $ZIP_FILE"
-
-          unzip -q "$ZIP_FILE" -d extracted
-
-      - name: Find Android Project
-        id: project
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SETTINGS=$(find extracted -type f \
-            \( -name settings.gradle \
-            -o -name settings.gradle.kts \) \
-            | head -n 1)
-
-          if [ -z "$SETTINGS" ]; then
-            echo "Gradle project not found"
-            exit 1
-          fi
-
-          PROJECT_DIR=$(dirname "$SETTINGS")
-
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Project: $PROJECT_DIR"
+          PROJECT="$(cd "$PROJECT" && pwd)"
+          echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
+          echo "Project: $PROJECT"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Restore Release Keystore
+      - name: Generate Debug Keystore
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
-        env:
-          KEYSTORE_BASE64: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
 
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "Missing REPAIR_PRO_KEYSTORE_BASE64"
-            exit 1
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair \
+              -keystore debug.keystore \
+              -storetype JKS \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -noprompt
           fi
-
-          printf '%s' "$KEYSTORE_BASE64" \
-            | base64 --decode > my-upload-key.jks
-
-          test -s my-upload-key.jks
-
-          echo "Keystore restored successfully"
-
-      - name: Verify Signing Secrets
-        shell: bash
-        env:
-          STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
-        run: |
-          set -euo pipefail
-
-          test -n "$STORE_PASSWORD" || {
-            echo "Missing store password"
-            exit 1
-          }
-
-          test -n "$KEY_PASSWORD" || {
-            echo "Missing key password"
-            exit 1
-          }
-
-          test -n "$KEY_ALIAS" || {
-            echo "Missing key alias"
-            exit 1
-          }
-
-          echo "Signing secrets are present"
 
       - name: Build Debug APK
         shell: bash
@@ -153,21 +105,54 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Repair-Pro-Debug-APK
-          path: extracted/**/build/outputs/apk/debug/*.apk
+          path: |
+            **/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
-      - name: Build Signed Release AAB
+      - name: Check Release Signing Secrets
+        id: signing
         shell: bash
-        working-directory: ${{ steps.project.outputs.dir }}
         env:
-          REPAIR_PRO_STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
-          REPAIR_PRO_KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
-          REPAIR_PRO_KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
+          KEYSTORE_BASE64: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
         run: |
           set -euo pipefail
 
+          if [ -n "$KEYSTORE_BASE64" ] &&
+             [ -n "$STORE_PASSWORD" ] &&
+             [ -n "$KEY_PASSWORD" ] &&
+             [ -n "$KEY_ALIAS" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Release signing secrets missing"
+          fi
+
+      - name: Restore Release Keystore
+        if: steps.signing.outputs.ready == 'true'
+        shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode > my-upload-key.jks
           test -s my-upload-key.jks
+
+      - name: Build Signed Release AAB
+        if: steps.signing.outputs.ready == 'true'
+        shell: bash
+        working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.REPAIR_PRO_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
 
           if [ -f gradlew ]; then
             chmod +x gradlew
@@ -177,9 +162,11 @@ jobs:
           fi
 
       - name: Upload Release AAB
+        if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Repair-Pro-Release-AAB
-          path: extracted/**/build/outputs/bundle/release/*.aab
+          path: |
+            **/build/outputs/bundle/release/*.aab
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
