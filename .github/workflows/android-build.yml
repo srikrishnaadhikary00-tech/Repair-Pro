@@ -4,15 +4,17 @@ name: Build Repair Pro APK and AAB
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - 'app/**'
-      - 'gradle/**'
-      - '*.gradle.kts'
-      - '*.gradle'
-      - 'gradle.properties'
-      - '*.zip'
-      - '.github/workflows/android-build.yml'
+      - ".github/workflows/android-build.yml"
+      - "app/**"
+      - "gradle/**"
+      - "*.gradle"
+      - "*.gradle.kts"
+      - "gradle.properties"
+      - "gradlew"
+      - "*.zip"
 
 permissions:
   contents: read
@@ -24,139 +26,241 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Find Android project (root or ZIP)
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Find Android Project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
+
+          if [ -f settings.gradle.kts ] || \
+             [ -f settings.gradle ]; then
+
             PROJECT="$GITHUB_WORKSPACE"
+
           else
             mkdir -p extracted
-            found=""
-            while IFS= read -r -d '' zip; do
-              rm -rf extracted/*
-              unzip -oq "$zip" -d extracted
-              settings="$(find extracted -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print -quit)"
-              if [ -n "$settings" ]; then
-                found="$(dirname "$settings")"
+            PROJECT=""
+
+            while IFS= read -r -d '' ZIP; do
+
+              rm -rf extracted
+              mkdir -p extracted
+
+              unzip -oq "$ZIP" -d extracted
+
+              SETTINGS="$(find extracted -type f \
+                \( -name settings.gradle.kts \
+                -o -name settings.gradle \) \
+                -print -quit)"
+
+              if [ -n "$SETTINGS" ]; then
+                PROJECT="$(dirname "$SETTINGS")"
                 break
               fi
-            done < <(find . -maxdepth 1 -type f -iname '*.zip' -print0)
-            if [ -z "$found" ]; then
-              echo '::error::No Android project found. Upload project files or a project ZIP.'
+
+            done < <(
+              find . -maxdepth 1 -type f \
+                -iname '*.zip' -print0
+            )
+
+            if [ -z "$PROJECT" ]; then
+              echo "::error::Android project not found"
               exit 1
             fi
-            PROJECT="$(cd "$found" && pwd)"
+
+            PROJECT="$(cd "$PROJECT" && pwd)"
           fi
-          test -f "$PROJECT/app/build.gradle.kts" || test -f "$PROJECT/app/build.gradle" || {
-            echo '::error::Missing app Gradle build file'; exit 1;
-          }
+
+          if [ ! -f "$PROJECT/app/build.gradle.kts" ] && \
+             [ ! -f "$PROJECT/app/build.gradle" ]; then
+            echo "::error::App Gradle file missing"
+            exit 1
+          fi
+
           echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
-          echo "Project: $PROJECT"
+          echo "Android project ready: $PROJECT"
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+      - name: Check Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
-      - name: Set up Gradle
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK not found"
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+
+          echo "Android SDK ready: $SDK"
+
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
 
-      - name: Set automatic version
+      - name: Automatic App Version
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         env:
           RUN_NUMBER: ${{ github.run_number }}
           VERSION_START_RUN: ${{ vars.VERSION_START_RUN }}
         run: |
+          set -euo pipefail
+
           python3 - <<'PY'
-          import os, re
+          import os
+          import re
           from pathlib import Path
-          p = Path('app/build.gradle.kts')
-          if not p.exists():
-              p = Path('app/build.gradle')
-          source = p.read_text()
-          run = int(os.environ['RUN_NUMBER'])
-          start = int(os.environ.get('VERSION_START_RUN') or '1')
+
+          path = Path("app/build.gradle.kts")
+
+          if not path.exists():
+              path = Path("app/build.gradle")
+
+          if not path.exists():
+              raise SystemExit("Gradle file missing")
+
+          source = path.read_text()
+
+          run = int(os.environ["RUN_NUMBER"])
+
+          start = int(
+              os.environ.get("VERSION_START_RUN") or "1"
+          )
+
           patch = run - start
+
           if patch < 0:
-              raise SystemExit('VERSION_START_RUN must be <= current workflow run number')
-          version_name = f'2.0.{patch}'
+              raise SystemExit(
+                  "VERSION_START_RUN is greater than RUN_NUMBER"
+              )
+
+          version_name = f"2.0.{patch}"
+
           version_code = 200000 + run
-          kotlin = p.suffix == '.kts'
-          code_value = f'versionCode = {version_code}' if kotlin else f'versionCode {version_code}'
-          name_value = f'versionName = "{version_name}"' if kotlin else f'versionName "{version_name}"'
-          source, c = re.subn(
+
+          kotlin = path.suffix == ".kts"
+
+          if kotlin:
+              code_line = f"versionCode = {version_code}"
+              name_line = f'versionName = "{version_name}"'
+          else:
+              code_line = f"versionCode {version_code}"
+              name_line = f'versionName "{version_name}"'
+
+          source, code_count = re.subn(
               r'(?m)^\s*versionCode\s*(?:=\s*)?\d+\s*$',
-              '    ' + code_value, source, count=1
+              "        " + code_line,
+              source,
+              count=1
           )
-          source, n = re.subn(
-              r'(?m)^\s*versionName\s*(?:=\s*)?["\'][^"\']+["\']\s*$',
-              '    ' + name_value, source, count=1
+
+          source, name_count = re.subn(
+              r'''(?m)^\s*versionName\s*(?:=\s*)?["'][^"']+["']\s*$''',
+              "        " + name_line,
+              source,
+              count=1
           )
-          if c != 1 or n != 1:
-              raise SystemExit('Could not find versionCode/versionName in app Gradle file')
-          p.write_text(source)
-          print(f'Building versionName={version_name}, versionCode={version_code}')
+
+          if code_count != 1 or name_count != 1:
+              raise SystemExit(
+                  "Version fields not found in Gradle file"
+              )
+
+          path.write_text(source)
+
+          print("Repair Pro Version:", version_name)
+          print("Version Code:", version_code)
           PY
 
-      - name: Restore Firebase configuration
+      - name: Restore Firebase Configuration
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         env:
           FIREBASE_JSON: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
           set -euo pipefail
-          if [ -n "$FIREBASE_JSON" ]; then
-            printf '%s' "$FIREBASE_JSON" | base64 --decode > app/google-services.json
-          fi
-          test -s app/google-services.json || {
-            echo '::error::Missing Firebase configuration'
-            exit 1
-          }
-          python3 -m json.tool app/google-services.json > /dev/null
 
-      - name: Restore stable debug signing key
+          if [ -n "$FIREBASE_JSON" ]; then
+            printf '%s' "$FIREBASE_JSON" \
+              | base64 --decode > app/google-services.json
+          fi
+
+          if [ ! -s app/google-services.json ]; then
+            echo "::error::Firebase JSON missing"
+            exit 1
+          fi
+
+          python3 -m json.tool \
+            app/google-services.json > /dev/null
+
+          echo "Firebase configuration ready"
+
+      - name: Prepare Debug Keystore
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         env:
           DEBUG_KEY: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-          if [ -n "$DEBUG_KEY" ]; then
-            printf '%s' "$DEBUG_KEY" | base64 --decode > debug.keystore
-          elif [ ! -s debug.keystore ]; then
-            keytool -genkeypair -keystore debug.keystore -storetype PKCS12 \
-              -storepass android -alias androiddebugkey -keypass android \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname 'CN=Android Debug,O=Android,C=US' -noprompt
-            echo '::warning::New debug key generated. Existing debug app may not update in place.'
-          fi
-          keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey > /dev/null
 
-      - name: Build debug APK
+          if [ -n "$DEBUG_KEY" ]; then
+
+            printf '%s' "$DEBUG_KEY" \
+              | base64 --decode > debug.keystore
+
+          elif [ ! -s debug.keystore ]; then
+
+            keytool -genkeypair \
+              -keystore debug.keystore \
+              -storetype PKCS12 \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -noprompt
+
+            echo "::warning::New debug signing key generated"
+          fi
+
+          keytool -list \
+            -keystore debug.keystore \
+            -storepass android \
+            -alias androiddebugkey > /dev/null
+
+      - name: Build Debug APK
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
           set -euo pipefail
+
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew --no-daemon :app:assembleDebug --stacktrace
+
+            ./gradlew \
+              --no-daemon \
+              :app:assembleDebug \
+              --stacktrace
           else
-            gradle --no-daemon :app:assembleDebug --stacktrace
+            echo "::error::Gradle wrapper missing"
+            exit 1
           fi
 
-      - name: Upload debug APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: Repair-Pro-2.x-Debug-APK
@@ -164,7 +268,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Check release signing secrets
+      - name: Check Release Signing
         id: signing
         shell: bash
         env:
@@ -172,26 +276,50 @@ jobs:
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
           KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
         run: |
-          if [ -n "$KEYSTORE" ] && [ -n "$STORE_PASS" ] && [ -n "$KEY_PASS" ]; then
-            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          if [ -n "$KEYSTORE" ] && \
+             [ -n "$STORE_PASS" ] && \
+             [ -n "$KEY_PASS" ]; then
+
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+
           else
-            echo 'ready=false' >> "$GITHUB_OUTPUT"
-            echo '::warning::Release signing secrets not configured; skipping signed release.'
+
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+
+            echo "::warning::Release signing not configured"
           fi
 
-      - name: Restore release signing key
+      - name: Restore Release Keystore
         if: steps.signing.outputs.ready == 'true'
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         env:
           KEYSTORE: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          printf '%s' "$KEYSTORE" | base64 --decode > my-upload-key.jks
-          keytool -list -keystore my-upload-key.jks -storepass "$STORE_PASS" -alias upload > /dev/null
 
-      - name: Build signed release APK and AAB
+          printf '%s' "$KEYSTORE" \
+            | base64 --decode > my-upload-key.jks
+
+          keytool -list \
+            -keystore my-upload-key.jks \
+            -storepass "$STORE_PASS" \
+            -alias upload > /dev/null
+
+          keytool -certreq \
+            -keystore my-upload-key.jks \
+            -storepass "$STORE_PASS" \
+            -alias upload \
+            -keypass "$KEY_PASS" \
+            -file /tmp/repair-pro-key-check.csr
+
+          rm -f /tmp/repair-pro-key-check.csr
+
+      - name: Build Release APK and AAB
         if: steps.signing.outputs.ready == 'true'
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
@@ -201,14 +329,17 @@ jobs:
           KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-            ./gradlew --no-daemon :app:assembleRelease :app:bundleRelease --stacktrace
-          else
-            gradle --no-daemon :app:assembleRelease :app:bundleRelease --stacktrace
-          fi
 
-      - name: Upload signed release APK
+          chmod +x gradlew
+
+          ./gradlew \
+            --no-daemon \
+            :app:assembleRelease \
+            :app:bundleRelease \
+            --stacktrace \
+            --no-configuration-cache
+
+      - name: Upload Release APK
         if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -217,7 +348,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload signed release AAB
+      - name: Upload Release AAB
         if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -226,8 +357,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Remove signing keys from runner
+      - name: Clean Signing Files
         if: always()
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
-        run: rm -f my-upload-key.jks
+        run: |
+          rm -f my-upload-key.jks
