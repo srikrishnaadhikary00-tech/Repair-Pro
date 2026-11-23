@@ -11,13 +11,17 @@ on:
       - "app/**"
       - "gradle/**"
       - "gradlew"
-      - "*.gradle.kts"
       - "*.gradle"
+      - "*.gradle.kts"
       - "gradle.properties"
       - "*.zip"
 
 permissions:
   contents: read
+
+concurrency:
+  group: repair-pro-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -51,7 +55,7 @@ jobs:
               rm -rf extracted
               mkdir -p extracted
 
-              echo "Checking: $ZIP"
+              echo "Checking $ZIP"
               unzip -oq "$ZIP" -d extracted
 
               SETTINGS="$(find extracted -type f \
@@ -74,14 +78,14 @@ jobs:
             PROJECT="$(cd "$PROJECT" && pwd)"
           fi
 
-          if [ ! -f "$PROJECT/app/build.gradle.kts" ] && \
-             [ ! -f "$PROJECT/app/build.gradle" ]; then
+          test -f "$PROJECT/app/build.gradle.kts" || \
+          test -f "$PROJECT/app/build.gradle" || {
             echo "::error::App Gradle file missing"
             exit 1
-          fi
+          }
 
           echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
-          echo "Android project: $PROJECT"
+          echo "Project ready: $PROJECT"
 
       - name: Check Android SDK
         shell: bash
@@ -100,18 +104,12 @@ jobs:
 
           echo "Android SDK ready"
 
-      - name: Setup Gradle 9.3.1
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.3.1"
 
-      - name: Verify Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-          gradle --version
-
-      - name: Automatic App Version
+      - name: Automatic Version and KSP Fix
         id: version
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
@@ -130,11 +128,8 @@ jobs:
           start = int(os.environ.get("VERSION_START_RUN") or "1")
 
           patch = run - start
-
           if patch < 0:
-              raise SystemExit(
-                  "VERSION_START_RUN exceeds current run number"
-              )
+              raise SystemExit("VERSION_START_RUN exceeds run number")
 
           version_name = f"2.0.{patch}"
           version_code = 200000 + run
@@ -147,6 +142,7 @@ jobs:
               raise SystemExit("App Gradle file missing")
 
           source = p.read_text()
+
           kotlin = p.suffix == ".kts"
 
           if kotlin:
@@ -185,9 +181,34 @@ jobs:
           )
 
           if c != 1 or n != 1:
-              raise SystemExit("Gradle version fields not found")
+              raise SystemExit("Version fields not found")
 
           p.write_text(source)
+
+          catalog = Path("gradle/libs.versions.toml")
+
+          if catalog.exists():
+              toml = catalog.read_text()
+
+              toml, count = re.subn(
+                  r'(?m)^googleDevtoolsKsp\s*=\s*"2\.3\.5"\s*$',
+                  'googleDevtoolsKsp = "2.3.7"',
+                  toml,
+                  count=1
+              )
+
+              if count == 1:
+                  catalog.write_text(toml)
+                  print("KSP updated from 2.3.5 to 2.3.7")
+              elif re.search(
+                  r'(?m)^googleDevtoolsKsp\s*=\s*"2\.3\.7"\s*$',
+                  toml
+              ):
+                  print("KSP already 2.3.7")
+              else:
+                  print("KSP version unchanged")
+          else:
+              print("Version catalog not found")
 
           with open(os.environ["GITHUB_ENV"], "a") as f:
               f.write(f"BUILD_VERSION_CODE={version_code}\n")
@@ -197,7 +218,7 @@ jobs:
               f.write(f"name={version_name}\n")
               f.write(f"code={version_code}\n")
 
-          print("App Version:", version_name)
+          print("Repair Pro:", version_name)
           print("Version Code:", version_code)
           PY
 
@@ -258,20 +279,18 @@ jobs:
       - name: Build Debug APK
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
         run: |
           set -euo pipefail
 
           if [ -f gradlew ]; then
-            echo "Using Gradle Wrapper"
             chmod +x gradlew
             ./gradlew --no-daemon \
               :app:assembleDebug \
               --stacktrace \
               --no-configuration-cache
           else
-            echo "Gradle Wrapper missing"
-            echo "Using installed Gradle 9.3.1"
-
             gradle --no-daemon \
               :app:assembleDebug \
               --stacktrace \
@@ -334,6 +353,7 @@ jobs:
           KEYSTORE_PATH: ${{ steps.project.outputs.dir }}/my-upload-key.jks
           STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
+          JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
         run: |
           set -euo pipefail
 
@@ -346,8 +366,6 @@ jobs:
               --stacktrace \
               --no-configuration-cache
           else
-            echo "Using installed Gradle 9.3.1"
-
             gradle --no-daemon \
               :app:assembleRelease \
               :app:bundleRelease \
