@@ -10,10 +10,10 @@ on:
       - ".github/workflows/android-build.yml"
       - "app/**"
       - "gradle/**"
-      - "*.gradle"
-      - "*.gradle.kts"
-      - "gradle.properties"
       - "gradlew"
+      - "gradle.properties"
+      - "*.gradle.kts"
+      - "*.gradle"
       - "*.zip"
 
 permissions:
@@ -41,35 +41,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -f settings.gradle.kts ] || \
-             [ -f settings.gradle ]; then
-
+          if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
             PROJECT="$GITHUB_WORKSPACE"
-
           else
-            mkdir -p extracted
             PROJECT=""
+            mkdir -p extracted
 
             while IFS= read -r -d '' ZIP; do
-
               rm -rf extracted
               mkdir -p extracted
 
               unzip -oq "$ZIP" -d extracted
 
               SETTINGS="$(find extracted -type f \
-                \( -name settings.gradle.kts \
-                -o -name settings.gradle \) \
+                \( -name settings.gradle.kts -o -name settings.gradle \) \
                 -print -quit)"
 
               if [ -n "$SETTINGS" ]; then
                 PROJECT="$(dirname "$SETTINGS")"
                 break
               fi
-
             done < <(
-              find . -maxdepth 1 -type f \
-                -iname '*.zip' -print0
+              find . -maxdepth 1 -type f -iname '*.zip' -print0
             )
 
             if [ -z "$PROJECT" ]; then
@@ -87,7 +80,7 @@ jobs:
           fi
 
           echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
-          echo "Android project ready: $PROJECT"
+          echo "Project ready: $PROJECT"
 
       - name: Check Android SDK
         shell: bash
@@ -97,19 +90,20 @@ jobs:
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
           if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            echo "::error::Android SDK not found"
+            echo "::error::Android SDK missing"
             exit 1
           fi
 
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
 
-          echo "Android SDK ready: $SDK"
+          echo "Android SDK ready"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Automatic App Version
+        id: version
         shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
         env:
@@ -123,64 +117,83 @@ jobs:
           import re
           from pathlib import Path
 
-          path = Path("app/build.gradle.kts")
-
-          if not path.exists():
-              path = Path("app/build.gradle")
-
-          if not path.exists():
-              raise SystemExit("Gradle file missing")
-
-          source = path.read_text()
-
           run = int(os.environ["RUN_NUMBER"])
-
-          start = int(
-              os.environ.get("VERSION_START_RUN") or "1"
-          )
+          start = int(os.environ.get("VERSION_START_RUN") or "1")
 
           patch = run - start
 
           if patch < 0:
               raise SystemExit(
-                  "VERSION_START_RUN is greater than RUN_NUMBER"
+                  "VERSION_START_RUN exceeds current run number"
               )
 
           version_name = f"2.0.{patch}"
-
           version_code = 200000 + run
 
-          kotlin = path.suffix == ".kts"
+          p = Path("app/build.gradle.kts")
+
+          if not p.exists():
+              p = Path("app/build.gradle")
+
+          if not p.exists():
+              raise SystemExit("App Gradle file missing")
+
+          source = p.read_text()
+
+          kotlin = p.suffix == ".kts"
 
           if kotlin:
-              code_line = f"versionCode = {version_code}"
-              name_line = f'versionName = "{version_name}"'
+              code_value = (
+                  'versionCode = '
+                  'System.getenv("BUILD_VERSION_CODE")'
+                  '?.toIntOrNull() ?: 2'
+              )
+              name_value = (
+                  'versionName = '
+                  'System.getenv("BUILD_VERSION_NAME")'
+                  ' ?: "1.1.0"'
+              )
           else:
-              code_line = f"versionCode {version_code}"
-              name_line = f'versionName "{version_name}"'
+              code_value = f"versionCode {version_code}"
+              name_value = f'versionName "{version_name}"'
 
-          source, code_count = re.subn(
-              r'(?m)^\s*versionCode\s*(?:=\s*)?\d+\s*$',
-              "        " + code_line,
+          code_pattern = (
+              r'(?m)^([ \t]*)versionCode\s*(?:=\s*)?[^\n]+$'
+          )
+          name_pattern = (
+              r'(?m)^([ \t]*)versionName\s*(?:=\s*)?[^\n]+$'
+          )
+
+          source, c = re.subn(
+              code_pattern,
+              lambda m: m.group(1) + code_value,
               source,
               count=1
           )
 
-          source, name_count = re.subn(
-              r'''(?m)^\s*versionName\s*(?:=\s*)?["'][^"']+["']\s*$''',
-              "        " + name_line,
+          source, n = re.subn(
+              name_pattern,
+              lambda m: m.group(1) + name_value,
               source,
               count=1
           )
 
-          if code_count != 1 or name_count != 1:
+          if c != 1 or n != 1:
               raise SystemExit(
-                  "Version fields not found in Gradle file"
+                  "Version fields missing from Gradle file"
               )
 
-          path.write_text(source)
+          p.write_text(source)
 
-          print("Repair Pro Version:", version_name)
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"BUILD_VERSION_CODE={version_code}\n")
+              f.write(f"BUILD_VERSION_NAME={version_name}\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"name={version_name}\n")
+              f.write(f"code={version_code}\n")
+
+          print("Repair Pro App Version:", version_name)
           print("Version Code:", version_code)
           PY
 
@@ -205,7 +218,7 @@ jobs:
           python3 -m json.tool \
             app/google-services.json > /dev/null
 
-          echo "Firebase configuration ready"
+          echo "Firebase ready"
 
       - name: Prepare Debug Keystore
         shell: bash
@@ -216,12 +229,10 @@ jobs:
           set -euo pipefail
 
           if [ -n "$DEBUG_KEY" ]; then
-
             printf '%s' "$DEBUG_KEY" \
               | base64 --decode > debug.keystore
 
           elif [ ! -s debug.keystore ]; then
-
             keytool -genkeypair \
               -keystore debug.keystore \
               -storetype PKCS12 \
@@ -250,11 +261,10 @@ jobs:
 
           if [ -f gradlew ]; then
             chmod +x gradlew
-
-            ./gradlew \
-              --no-daemon \
+            ./gradlew --no-daemon \
               :app:assembleDebug \
-              --stacktrace
+              --stacktrace \
+              --no-configuration-cache
           else
             echo "::error::Gradle wrapper missing"
             exit 1
@@ -263,7 +273,7 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Repair-Pro-2.x-Debug-APK
+          name: Repair-Pro-${{ steps.version.outputs.name }}-Debug-APK
           path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
@@ -281,14 +291,10 @@ jobs:
           if [ -n "$KEYSTORE" ] && \
              [ -n "$STORE_PASS" ] && \
              [ -n "$KEY_PASS" ]; then
-
             echo "ready=true" >> "$GITHUB_OUTPUT"
-
           else
-
             echo "ready=false" >> "$GITHUB_OUTPUT"
-
-            echo "::warning::Release signing not configured"
+            echo "::warning::Release signing secrets missing"
           fi
 
       - name: Restore Release Keystore
@@ -315,9 +321,9 @@ jobs:
             -storepass "$STORE_PASS" \
             -alias upload \
             -keypass "$KEY_PASS" \
-            -file /tmp/repair-pro-key-check.csr
+            -file /tmp/repair-pro-check.csr
 
-          rm -f /tmp/repair-pro-key-check.csr
+          rm -f /tmp/repair-pro-check.csr
 
       - name: Build Release APK and AAB
         if: steps.signing.outputs.ready == 'true'
@@ -332,8 +338,7 @@ jobs:
 
           chmod +x gradlew
 
-          ./gradlew \
-            --no-daemon \
+          ./gradlew --no-daemon \
             :app:assembleRelease \
             :app:bundleRelease \
             --stacktrace \
@@ -343,7 +348,7 @@ jobs:
         if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: Repair-Pro-2.x-Release-APK
+          name: Repair-Pro-${{ steps.version.outputs.name }}-Release-APK
           path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
@@ -352,7 +357,7 @@ jobs:
         if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: Repair-Pro-2.x-Release-AAB
+          name: Repair-Pro-${{ steps.version.outputs.name }}-Release-AAB
           path: ${{ steps.project.outputs.dir }}/app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
           retention-days: 14
