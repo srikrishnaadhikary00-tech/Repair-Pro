@@ -37,21 +37,23 @@ jobs:
           from pathlib import Path
 
           root = Path.cwd()
-          target = root / "_android_source"
+          target = root / '_android_source'
 
           def find_android(base):
               for name in (
-                  "settings.gradle.kts",
-                  "settings.gradle"
+                  'settings.gradle.kts',
+                  'settings.gradle'
               ):
                   for f in sorted(base.rglob(name)):
                       p = f.parent
+
                       if (
-                          (p / "app/build.gradle").exists()
+                          (p / 'app/build.gradle').exists()
                           or
-                          (p / "app/build.gradle.kts").exists()
+                          (p / 'app/build.gradle.kts').exists()
                       ):
                           return p.resolve()
+
               return None
 
           project = find_android(root)
@@ -59,9 +61,9 @@ jobs:
           if project is None:
               target.mkdir(exist_ok=True)
 
-              archives = sorted(root.rglob("*.zip"))
-
-              for i, archive in enumerate(archives):
+              for i, archive in enumerate(
+                  sorted(root.rglob('*.zip'))
+              ):
                   if target in archive.parents:
                       continue
 
@@ -79,13 +81,27 @@ jobs:
                                   dest.resolve()
                               ):
                                   raise ValueError(
-                                      "Unsafe ZIP path"
+                                      'Unsafe ZIP path'
+                                  )
+
+                              if member.is_dir():
+                                  continue
+
+                              mode = (
+                                  member.external_attr >> 16
+                              )
+
+                              if (
+                                  mode & 0o170000
+                              ) == 0o120000:
+                                  raise ValueError(
+                                      'ZIP symlink rejected'
                                   )
 
                           z.extractall(dest)
 
                   except Exception as e:
-                      print("ZIP skipped:", e)
+                      print('ZIP skipped:', e)
                       continue
 
                   project = find_android(dest)
@@ -95,15 +111,15 @@ jobs:
 
           if project is None:
               raise SystemExit(
-                  "::error::Android project not found"
+                  '::error::Android project not found'
               )
 
-          print("Android project:", project)
+          print('Android project:', project)
 
           with open(
-              os.environ["GITHUB_OUTPUT"], "a"
+              os.environ['GITHUB_OUTPUT'], 'a'
           ) as out:
-              out.write(f"dir={project}\n")
+              out.write(f'dir={project}\n')
           PY
 
       - name: Check Android SDK
@@ -111,22 +127,31 @@ jobs:
         run: |
           set -euo pipefail
           test -d "$ANDROID_HOME"
-          echo "Android SDK ready"
+          echo 'Android SDK ready'
 
       - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Prepare Gradle
+      - name: Configure Gradle and KSP
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          gradle --version
+          touch gradle.properties
 
-          echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
+          cat >> gradle.properties <<'PROPERTIES'
+          org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+          org.gradle.parallel=false
+          org.gradle.configuration-cache=false
+          ksp.incremental=false
+          ksp.incremental.intermodule=false
+          kotlin.compiler.execution.strategy=in-process
+          PROPERTIES
+
+          gradle --version
 
       - name: Automatic App Version
         id: version
@@ -142,29 +167,29 @@ jobs:
           import re
           from pathlib import Path
 
-          run = int(os.environ["RUN_NUMBER"])
+          run = int(os.environ['RUN_NUMBER'])
 
-          version = f"2.0.{run}"
+          version = f'2.0.{run}'
           code = 200000 + run
 
-          files = [
-              Path("app/build.gradle.kts"),
-              Path("app/build.gradle")
-          ]
-
           file = next(
-              (f for f in files if f.exists()),
+              (
+                  f for f in (
+                      Path('app/build.gradle.kts'),
+                      Path('app/build.gradle')
+                  )
+                  if f.exists()
+              ),
               None
           )
 
           if file is None:
               raise SystemExit(
-                  "Android app Gradle file missing"
+                  '::error::Android app Gradle file missing'
               )
 
           content = file.read_text()
-
-          kotlin = file.suffix == ".kts"
+          kotlin = file.suffix == '.kts'
 
           code_pattern = (
               r'\bversionCode\s*(?:=\s*)?\d+'
@@ -176,15 +201,15 @@ jobs:
           )
 
           code_value = (
-              f"versionCode = {code}"
-              if kotlin else
-              f"versionCode {code}"
+              f'versionCode = {code}'
+              if kotlin
+              else f'versionCode {code}'
           )
 
           name_value = (
               f'versionName = "{version}"'
-              if kotlin else
-              f'versionName "{version}"'
+              if kotlin
+              else f'versionName "{version}"'
           )
 
           updated, c = re.subn(
@@ -203,19 +228,17 @@ jobs:
 
           if c and n:
               file.write_text(updated)
-              print("Version updated:", version)
+              print('Version updated:', version)
           else:
               print(
-                  "Version fields dynamic or missing."
-              )
-              print(
-                  "Keeping original Gradle configuration."
+                  '::warning::Version fields dynamic '
+                  'or missing; original values kept'
               )
 
           with open(
-              os.environ["GITHUB_OUTPUT"], "a"
+              os.environ['GITHUB_OUTPUT'], 'a'
           ) as out:
-              out.write(f"name={version}\n")
+              out.write(f'name={version}\n')
           PY
 
       - name: Restore Firebase Configuration
@@ -236,13 +259,12 @@ jobs:
             python3 -m json.tool \
               app/google-services.json > /dev/null
 
-            echo "Firebase JSON valid"
+            echo 'Firebase JSON valid'
           else
-            echo "::warning::Firebase JSON not found"
+            echo '::warning::Firebase JSON not found'
           fi
 
       - name: Prepare Debug Keystore
-        working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         env:
           DEBUG_KEY: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
@@ -266,11 +288,11 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US" \
+              -dname 'CN=Android Debug,O=Android,C=US' \
               -noprompt
           fi
 
-          echo "Debug keystore ready"
+          echo 'Debug keystore ready'
 
       - name: Show Debug SHA Fingerprints
         shell: bash
@@ -287,7 +309,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          "$GRADLE_CMD" \
+          gradle \
             --no-daemon \
             :app:assembleDebug \
             --stacktrace \
@@ -313,12 +335,12 @@ jobs:
              [ -n "$STORE_PASS" ] && \
              [ -n "$KEY_PASS" ]; then
 
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
 
           else
 
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Release signing unavailable"
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::Release signing unavailable'
 
           fi
 
@@ -352,8 +374,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "REPAIR PRO RELEASE SHA"
-
           keytool -list -v \
             -keystore my-upload-key.jks \
             -storepass "$STORE_PASS" \
@@ -372,7 +392,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          "$GRADLE_CMD" \
+          gradle \
             --no-daemon \
             :app:assembleRelease \
             :app:bundleRelease \
@@ -426,18 +446,18 @@ jobs:
         shell: bash
         run: |
           rm -f my-upload-key.jks
-          echo "Temporary release signing file removed"
+          echo 'Temporary release signing file removed'
 
       - name: Build Summary
         if: success()
         shell: bash
         run: |
           {
-            echo "## Repair Pro Build"
-            echo ""
-            echo "Build completed."
-            echo ""
-            echo "Download available APK/AAB artifacts."
-            echo ""
-            echo "Verify Firebase SHA fingerprints."
+            echo '## Repair Pro Build'
+            echo ''
+            echo 'Build completed.'
+            echo ''
+            echo 'Download available APK/AAB artifacts.'
+            echo ''
+            echo 'Verify Firebase SHA fingerprints.'
           } >> "$GITHUB_STEP_SUMMARY"
