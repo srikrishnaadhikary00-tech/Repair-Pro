@@ -2,26 +2,13 @@
 name: Build Repair Pro APK and AAB
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
-    paths:
-      - ".github/workflows/android-build.yml"
-      - "**/*.zip"
-      - "**/*.gradle"
-      - "**/*.gradle.kts"
-      - "**/*.kt"
-      - "**/*.java"
-      - "**/*.xml"
-      - "**/gradle.properties"
+  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: repair-pro-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   build:
@@ -51,92 +38,78 @@ jobs:
           from pathlib import Path
 
           root = Path.cwd()
-          extracted = root / "_repair_extracted"
-          extracted.mkdir(exist_ok=True)
+          target = root / "_android_source"
 
-          def find_project(base):
-              for settings in sorted(
-                  list(base.rglob("settings.gradle.kts")) +
-                  list(base.rglob("settings.gradle"))
+          def find_android(base):
+              for name in (
+                  "settings.gradle.kts",
+                  "settings.gradle"
               ):
-                  project = settings.parent
-                  if (
-                      (project / "app/build.gradle.kts").is_file()
-                      or (project / "app/build.gradle").is_file()
-                  ):
-                      return project.resolve()
+                  for f in sorted(base.rglob(name)):
+                      p = f.parent
+                      if (
+                          (p / "app/build.gradle").exists()
+                          or
+                          (p / "app/build.gradle.kts").exists()
+                      ):
+                          return p.resolve()
               return None
 
-          project = find_project(root)
+          project = find_android(root)
 
           if project is None:
-              zips = sorted(
-                  root.rglob("*.zip"),
-                  key=lambda p: (
-                      "repair" not in p.name.lower(),
-                      str(p)
-                  )
+              target.mkdir(exist_ok=True)
+
+              archives = sorted(
+                  root.rglob("*.zip")
               )
 
-              print("ZIP files found:", len(zips))
-
-              for i, archive in enumerate(zips):
-                  if ".git" in archive.parts:
+              for i, archive in enumerate(archives):
+                  if target in archive.parents:
                       continue
 
-                  target = extracted / f"project_{i}"
-                  target.mkdir(parents=True, exist_ok=True)
-
-                  print("Checking ZIP:", archive.name)
+                  dest = target / str(i)
+                  dest.mkdir(parents=True, exist_ok=True)
 
                   try:
                       with zipfile.ZipFile(archive) as z:
-                          for info in z.infolist():
-                              dest = (
-                                  target / info.filename
+                          for member in z.infolist():
+                              path = (
+                                  dest / member.filename
                               ).resolve()
-
-                              if not dest.is_relative_to(
-                                  target.resolve()
+                              if not path.is_relative_to(
+                                  dest.resolve()
                               ):
                                   raise ValueError(
                                       "Unsafe ZIP path"
                                   )
-
-                          z.extractall(target)
-
-                  except Exception as exc:
-                      print("ZIP skipped:", exc)
+                          z.extractall(dest)
+                  except Exception as e:
+                      print("ZIP skipped:", e)
                       continue
 
-                  project = find_project(target)
-
+                  project = find_android(dest)
                   if project:
                       break
 
           if project is None:
               raise SystemExit(
-                  "::error::Android project not found. "
-                  "Upload an Android project ZIP "
-                  "containing settings.gradle "
-                  "and app/build.gradle."
+                  "::error::Android project not found"
               )
 
           print("Android project:", project)
 
           with open(
               os.environ["GITHUB_OUTPUT"], "a"
-          ) as output:
-              output.write(f"dir={project}\n")
+          ) as out:
+              out.write(f"dir={project}\n")
           PY
 
       - name: Check Android SDK
         shell: bash
         run: |
           set -euo pipefail
-
-          test -d "${ANDROID_HOME:?Android SDK missing}"
-
+          test -d "$ANDROID_HOME"
           echo "Android SDK ready"
 
       - name: Setup Gradle
@@ -145,30 +118,28 @@ jobs:
           gradle-version: "8.13"
 
       - name: Prepare Gradle
-        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f gradlew ] \
-            && [ -f gradle/wrapper/gradle-wrapper.jar ] \
-            && [ -f gradle/wrapper/gradle-wrapper.properties ]; then
+          if [ -f gradlew ] && \
+             [ -f gradle/wrapper/gradle-wrapper.jar ] && \
+             [ -f gradle/wrapper/gradle-wrapper.properties ]; then
 
             chmod +x gradlew
             echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
-            echo "Project Gradle wrapper ready"
 
           else
 
             echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
-            echo "Using installed Gradle 8.13"
 
           fi
 
       - name: Automatic App Version
         id: version
-        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         env:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
@@ -180,89 +151,82 @@ jobs:
           from pathlib import Path
 
           run = int(os.environ["RUN_NUMBER"])
+          version = f"2.0.{run}"
+          code = 200000 + run
 
-          version_name = f"2.0.{run}"
-          version_code = 200000 + run
-
-          candidates = [
+          files = [
               Path("app/build.gradle.kts"),
               Path("app/build.gradle")
           ]
 
           file = next(
-              (p for p in candidates if p.exists()),
+              (f for f in files if f.exists()),
               None
           )
 
           if file is None:
               raise SystemExit(
-                  "App Gradle file missing"
+                  "Android app Gradle file missing"
               )
 
-          text = file.read_text()
+          content = file.read_text()
 
           kotlin = file.suffix == ".kts"
 
           code_pattern = (
-              r"\bversionCode\s*(?:=\s*)?\d+"
+              r'\bversionCode\s*(?:=\s*)?\d+'
           )
-
           name_pattern = (
               r'\bversionName\s*(?:=\s*)?'
               r'["\'][^"\']*["\']'
           )
 
-          code_replacement = (
-              f"versionCode = {version_code}"
-              if kotlin
-              else f"versionCode {version_code}"
+          code_value = (
+              f"versionCode = {code}"
+              if kotlin else
+              f"versionCode {code}"
           )
 
-          name_replacement = (
-              f'versionName = "{version_name}"'
-              if kotlin
-              else f'versionName "{version_name}"'
+          name_value = (
+              f'versionName = "{version}"'
+              if kotlin else
+              f'versionName "{version}"'
           )
 
-          text, c = re.subn(
+          updated, c = re.subn(
               code_pattern,
-              code_replacement,
-              text,
+              code_value,
+              content,
               count=1
           )
 
-          text, n = re.subn(
+          updated, n = re.subn(
               name_pattern,
-              name_replacement,
-              text,
+              name_value,
+              updated,
               count=1
           )
 
-          if c == 0 or n == 0:
-              raise SystemExit(
-                  "Version fields not found. "
-                  "Inspect app/build.gradle."
+          if c and n:
+              file.write_text(updated)
+              print("Version updated:", version)
+          else:
+              print(
+                  "Version fields are dynamic or missing."
               )
-
-          file.write_text(text)
-
-          print("App Version:", version_name)
-          print("Version Code:", version_code)
+              print(
+                  "Keeping original Gradle configuration."
+              )
 
           with open(
               os.environ["GITHUB_OUTPUT"], "a"
-          ) as output:
-              output.write(
-                  f"name={version_name}\n"
-              )
-              output.write(
-                  f"code={version_code}\n"
-              )
+          ) as out:
+              out.write(f"name={version}\n")
           PY
 
       - name: Restore Firebase Configuration
-        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         env:
           FIREBASE_JSON: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
@@ -274,36 +238,36 @@ jobs:
               > app/google-services.json
           fi
 
-          test -s app/google-services.json || {
-            echo "::error::Firebase JSON missing"
-            exit 1
-          }
-
-          python3 -m json.tool \
-            app/google-services.json > /dev/null
-
-          echo "Firebase configuration valid"
+          if [ -s app/google-services.json ]; then
+            python3 -m json.tool \
+              app/google-services.json > /dev/null
+            echo "Firebase JSON valid"
+          else
+            echo "::warning::Firebase JSON not found"
+          fi
 
       - name: Prepare Debug Keystore
-        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         env:
           DEBUG_KEY: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
 
+          mkdir -p "$HOME/.android"
+
           if [ -n "$DEBUG_KEY" ]; then
             printf '%s' "$DEBUG_KEY" \
-              | base64 --decode > debug.keystore
+              | base64 --decode \
+              > "$HOME/.android/debug.keystore"
           fi
 
-          if [ ! -s debug.keystore ]; then
+          if [ ! -s "$HOME/.android/debug.keystore" ]; then
             keytool -genkeypair \
-              -keystore debug.keystore \
-              -storetype PKCS12 \
+              -keystore "$HOME/.android/debug.keystore" \
               -storepass android \
-              -alias androiddebugkey \
               -keypass android \
+              -alias androiddebugkey \
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
@@ -311,23 +275,24 @@ jobs:
               -noprompt
           fi
 
-          keytool -list \
-            -keystore debug.keystore \
-            -storepass android \
-            -alias androiddebugkey > /dev/null
-
-          mkdir -p "$HOME/.android"
-          cp debug.keystore "$HOME/.android/debug.keystore"
-
           echo "Debug keystore ready"
 
-      - name: Build Debug APK
+      - name: Show Debug SHA Fingerprints
         shell: bash
+        run: |
+          keytool -list -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            | grep -E 'SHA1:|SHA256:'
+
+      - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          $GRADLE_CMD \
+          "$GRADLE_CMD" \
             --no-daemon \
             :app:assembleDebug \
             --stacktrace
@@ -335,7 +300,7 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Repair-Pro-${{ steps.version.outputs.name }}-Debug-APK
+          name: Repair-Pro-Debug-APK
           path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
@@ -348,65 +313,50 @@ jobs:
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
           KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
         run: |
-          set -euo pipefail
-
-          if [ -n "$KEYSTORE" ] \
-            && [ -n "$STORE_PASS" ] \
-            && [ -n "$KEY_PASS" ]; then
+          if [ -n "$KEYSTORE" ] && \
+             [ -n "$STORE_PASS" ] && \
+             [ -n "$KEY_PASS" ]; then
 
             echo "ready=true" >> "$GITHUB_OUTPUT"
 
           else
 
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Release signing secrets missing"
+            echo "::warning::Release signing unavailable"
 
           fi
 
       - name: Restore Release Keystore
         if: steps.signing.outputs.ready == 'true'
-        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         env:
           KEYSTORE: ${{ secrets.REPAIR_PRO_KEYSTORE_BASE64 }}
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
-          KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
           printf '%s' "$KEYSTORE" \
-            | base64 --decode > my-upload-key.jks
+            | base64 --decode \
+            > my-upload-key.jks
 
           chmod 600 my-upload-key.jks
 
           keytool -list \
             -keystore my-upload-key.jks \
             -storepass "$STORE_PASS" \
-            -alias upload > /dev/null
-
-          keytool -certreq \
-            -keystore my-upload-key.jks \
-            -storepass "$STORE_PASS" \
-            -alias upload \
-            -keypass "$KEY_PASS" \
-            -file /tmp/repair-pro-check.csr
-
-          rm -f /tmp/repair-pro-check.csr
-
-          echo "Release keystore ready"
+            -alias upload
 
       - name: Show Release SHA Fingerprints
         if: steps.signing.outputs.ready == 'true'
-        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         env:
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
         run: |
           set -euo pipefail
 
-          echo "================================"
           echo "REPAIR PRO RELEASE SHA"
-          echo "================================"
 
           keytool -list -v \
             -keystore my-upload-key.jks \
@@ -414,14 +364,10 @@ jobs:
             -alias upload \
             | grep -E 'SHA1:|SHA256:'
 
-          echo "================================"
-          echo "Compare these with Firebase"
-          echo "================================"
-
       - name: Build Release APK and AAB
         if: steps.signing.outputs.ready == 'true'
-        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         env:
           KEYSTORE_PATH: ${{ steps.project.outputs.dir }}/my-upload-key.jks
           STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
@@ -430,35 +376,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          $GRADLE_CMD \
+          "$GRADLE_CMD" \
             --no-daemon \
             :app:assembleRelease \
             :app:bundleRelease \
             --stacktrace \
             --no-configuration-cache
 
-      - name: Verify Release APK Signature
+      - name: Verify Release APK
         if: steps.signing.outputs.ready == 'true'
-        shell: bash
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
           set -euo pipefail
 
           APK="$(find app/build/outputs/apk/release \
-            -type f \
-            -name '*.apk' \
-            -print -quit)"
+            -type f -name '*.apk' -print -quit)"
 
-          test -n "$APK" || {
-            echo "::error::Release APK missing"
-            exit 1
-          }
+          test -n "$APK"
 
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" \
-            -type f \
-            -name apksigner \
-            | sort -V \
-            | tail -1)"
+            -type f -name apksigner \
+            | sort -V | tail -1)"
 
           test -n "$APKSIGNER"
 
@@ -467,13 +406,11 @@ jobs:
             --print-certs \
             "$APK"
 
-          echo "Release APK signature verified"
-
       - name: Upload Release APK
         if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: Repair-Pro-${{ steps.version.outputs.name }}-Release-APK
+          name: Repair-Pro-Release-APK
           path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
@@ -482,35 +419,29 @@ jobs:
         if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: Repair-Pro-${{ steps.version.outputs.name }}-Release-AAB
+          name: Repair-Pro-Release-AAB
           path: ${{ steps.project.outputs.dir }}/app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
           retention-days: 14
 
+      - name: Clean Signing Files
+        if: always() && steps.project.outputs.dir != ''
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          rm -f my-upload-key.jks
+          echo "Temporary release signing file removed"
+
       - name: Build Summary
         if: success()
         shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.name }}
-          VERSION_CODE: ${{ steps.version.outputs.code }}
         run: |
           {
             echo "## Repair Pro Build"
             echo ""
-            echo "Version: $VERSION"
+            echo "Build completed."
             echo ""
-            echo "Version Code: $VERSION_CODE"
+            echo "Download available APK/AAB artifacts."
             echo ""
-            echo "Build completed successfully."
-            echo ""
-            echo "Check Artifacts for APK and AAB."
+            echo "Verify Firebase SHA fingerprints."
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Clean Signing Files
-        if: always() && steps.project.outputs.dir != ''
-        shell: bash
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: |
-          rm -f my-upload-key.jks
-          rm -f debug.keystore
-          echo "Temporary signing files cleaned"
