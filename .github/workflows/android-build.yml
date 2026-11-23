@@ -11,9 +11,9 @@ on:
       - "app/**"
       - "gradle/**"
       - "gradlew"
-      - "gradle.properties"
       - "*.gradle.kts"
       - "*.gradle"
+      - "gradle.properties"
       - "*.zip"
 
 permissions:
@@ -51,6 +51,7 @@ jobs:
               rm -rf extracted
               mkdir -p extracted
 
+              echo "Checking: $ZIP"
               unzip -oq "$ZIP" -d extracted
 
               SETTINGS="$(find extracted -type f \
@@ -80,7 +81,7 @@ jobs:
           fi
 
           echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
-          echo "Project ready: $PROJECT"
+          echo "Android project: $PROJECT"
 
       - name: Check Android SDK
         shell: bash
@@ -99,8 +100,16 @@ jobs:
 
           echo "Android SDK ready"
 
-      - name: Setup Gradle
+      - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Verify Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --version
 
       - name: Automatic App Version
         id: version
@@ -131,7 +140,6 @@ jobs:
           version_code = 200000 + run
 
           p = Path("app/build.gradle.kts")
-
           if not p.exists():
               p = Path("app/build.gradle")
 
@@ -139,7 +147,6 @@ jobs:
               raise SystemExit("App Gradle file missing")
 
           source = p.read_text()
-
           kotlin = p.suffix == ".kts"
 
           if kotlin:
@@ -154,34 +161,31 @@ jobs:
                   ' ?: "1.1.0"'
               )
           else:
-              code_value = f"versionCode {version_code}"
-              name_value = f'versionName "{version_name}"'
-
-          code_pattern = (
-              r'(?m)^([ \t]*)versionCode\s*(?:=\s*)?[^\n]+$'
-          )
-          name_pattern = (
-              r'(?m)^([ \t]*)versionName\s*(?:=\s*)?[^\n]+$'
-          )
+              code_value = (
+                  'versionCode '
+                  'Integer.parseInt(System.getenv("BUILD_VERSION_CODE") ?: "2")'
+              )
+              name_value = (
+                  'versionName '
+                  '(System.getenv("BUILD_VERSION_NAME") ?: "1.1.0")'
+              )
 
           source, c = re.subn(
-              code_pattern,
+              r'(?m)^([ \t]*)versionCode\s*(?:=\s*)?[^\n]+$',
               lambda m: m.group(1) + code_value,
               source,
               count=1
           )
 
           source, n = re.subn(
-              name_pattern,
+              r'(?m)^([ \t]*)versionName\s*(?:=\s*)?[^\n]+$',
               lambda m: m.group(1) + name_value,
               source,
               count=1
           )
 
           if c != 1 or n != 1:
-              raise SystemExit(
-                  "Version fields missing from Gradle file"
-              )
+              raise SystemExit("Gradle version fields not found")
 
           p.write_text(source)
 
@@ -193,7 +197,7 @@ jobs:
               f.write(f"name={version_name}\n")
               f.write(f"code={version_code}\n")
 
-          print("Repair Pro App Version:", version_name)
+          print("App Version:", version_name)
           print("Version Code:", version_code)
           PY
 
@@ -210,14 +214,12 @@ jobs:
               | base64 --decode > app/google-services.json
           fi
 
-          if [ ! -s app/google-services.json ]; then
+          test -s app/google-services.json || {
             echo "::error::Firebase JSON missing"
             exit 1
-          fi
+          }
 
-          python3 -m json.tool \
-            app/google-services.json > /dev/null
-
+          python3 -m json.tool app/google-services.json > /dev/null
           echo "Firebase ready"
 
       - name: Prepare Debug Keystore
@@ -260,14 +262,20 @@ jobs:
           set -euo pipefail
 
           if [ -f gradlew ]; then
+            echo "Using Gradle Wrapper"
             chmod +x gradlew
             ./gradlew --no-daemon \
               :app:assembleDebug \
               --stacktrace \
               --no-configuration-cache
           else
-            echo "::error::Gradle wrapper missing"
-            exit 1
+            echo "Gradle Wrapper missing"
+            echo "Using installed Gradle 9.3.1"
+
+            gradle --no-daemon \
+              :app:assembleDebug \
+              --stacktrace \
+              --no-configuration-cache
           fi
 
       - name: Upload Debug APK
@@ -294,7 +302,7 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Release signing secrets missing"
+            echo "::warning::Release signing secrets incomplete"
           fi
 
       - name: Restore Release Keystore
@@ -311,19 +319,12 @@ jobs:
           printf '%s' "$KEYSTORE" \
             | base64 --decode > my-upload-key.jks
 
+          test -s my-upload-key.jks
+
           keytool -list \
             -keystore my-upload-key.jks \
             -storepass "$STORE_PASS" \
             -alias upload > /dev/null
-
-          keytool -certreq \
-            -keystore my-upload-key.jks \
-            -storepass "$STORE_PASS" \
-            -alias upload \
-            -keypass "$KEY_PASS" \
-            -file /tmp/repair-pro-check.csr
-
-          rm -f /tmp/repair-pro-check.csr
 
       - name: Build Release APK and AAB
         if: steps.signing.outputs.ready == 'true'
@@ -336,13 +337,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          chmod +x gradlew
+          if [ -f gradlew ]; then
+            chmod +x gradlew
 
-          ./gradlew --no-daemon \
-            :app:assembleRelease \
-            :app:bundleRelease \
-            --stacktrace \
-            --no-configuration-cache
+            ./gradlew --no-daemon \
+              :app:assembleRelease \
+              :app:bundleRelease \
+              --stacktrace \
+              --no-configuration-cache
+          else
+            echo "Using installed Gradle 9.3.1"
+
+            gradle --no-daemon \
+              :app:assembleRelease \
+              :app:bundleRelease \
+              --stacktrace \
+              --no-configuration-cache
+          fi
 
       - name: Upload Release APK
         if: steps.signing.outputs.ready == 'true'
