@@ -3,8 +3,7 @@ name: Build Repair Pro APK and AAB
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -25,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -63,9 +62,9 @@ jobs:
           if project is None:
               target.mkdir(exist_ok=True)
 
-              archives = sorted(root.rglob("*.zip"))
-
-              for i, archive in enumerate(archives):
+              for i, archive in enumerate(
+                  sorted(root.rglob("*.zip"))
+              ):
                   if target in archive.parents:
                       continue
 
@@ -75,9 +74,6 @@ jobs:
                   try:
                       with zipfile.ZipFile(archive) as z:
                           for member in z.infolist():
-                              if member.is_dir():
-                                  continue
-
                               path = (
                                   dest / member.filename
                               ).resolve()
@@ -147,28 +143,24 @@ jobs:
           version = f"2.0.{run}"
           code = 200000 + run
 
-          files = [
-              Path("app/build.gradle.kts"),
-              Path("app/build.gradle")
-          ]
-
           file = next(
-              (f for f in files if f.exists()),
+              (
+                  f for f in [
+                      Path("app/build.gradle.kts"),
+                      Path("app/build.gradle")
+                  ]
+                  if f.exists()
+              ),
               None
           )
 
           if file is None:
-              raise SystemExit(
-                  "App Gradle file missing"
-              )
+              raise SystemExit("App Gradle file missing")
 
           content = file.read_text()
           kotlin = file.suffix == ".kts"
 
-          code_pattern = (
-              r'\bversionCode\s*(?:=\s*)?\d+'
-          )
-
+          code_pattern = r'\bversionCode\s*(?:=\s*)?\d+'
           name_pattern = (
               r'\bversionName\s*(?:=\s*)?'
               r'["\'][^"\']*["\']'
@@ -176,37 +168,26 @@ jobs:
 
           code_value = (
               f"versionCode = {code}"
-              if kotlin else
-              f"versionCode {code}"
+              if kotlin else f"versionCode {code}"
           )
 
           name_value = (
               f'versionName = "{version}"'
-              if kotlin else
-              f'versionName "{version}"'
+              if kotlin else f'versionName "{version}"'
           )
 
           updated, c = re.subn(
-              code_pattern,
-              code_value,
-              content,
-              count=1
+              code_pattern, code_value, content, count=1
           )
-
           updated, n = re.subn(
-              name_pattern,
-              name_value,
-              updated,
-              count=1
+              name_pattern, name_value, updated, count=1
           )
 
           if c and n:
               file.write_text(updated)
               print("Version:", version)
           else:
-              print(
-                  "Keeping existing version configuration"
-              )
+              print("Keeping existing version configuration")
           PY
 
       - name: Restore Firebase Configuration
@@ -225,7 +206,6 @@ jobs:
           if [ -s app/google-services.json ]; then
             python3 -m json.tool \
               app/google-services.json > /dev/null
-
             echo "Firebase JSON valid"
           else
             echo "::warning::Firebase JSON missing"
@@ -259,21 +239,13 @@ jobs:
               -noprompt
           fi
 
-          cp "$HOME/.android/debug.keystore" \
-            debug.keystore
+          cp "$HOME/.android/debug.keystore" debug.keystore
+          cp "$HOME/.android/debug.keystore" app/debug.keystore
 
-          cp "$HOME/.android/debug.keystore" \
-            app/debug.keystore
-
-          chmod 600 debug.keystore
-          chmod 600 app/debug.keystore
-
-          echo "Debug keystore ready"
+          chmod 600 debug.keystore app/debug.keystore
 
       - name: Show Debug SHA Fingerprints
         run: |
-          set -euo pipefail
-
           keytool -list -v \
             -keystore "$HOME/.android/debug.keystore" \
             -storepass android \
@@ -313,10 +285,9 @@ jobs:
              [ -n "$STORE_PASS" ] && \
              [ -n "$KEY_PASS" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "Release signing secrets available"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Release signing secrets missing"
+            echo "::warning::Release signing unavailable"
           fi
 
       - name: Restore Release Keystore
@@ -345,10 +316,6 @@ jobs:
         env:
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
         run: |
-          set -euo pipefail
-
-          echo "REPAIR PRO RELEASE SHA"
-
           keytool -list -v \
             -keystore my-upload-key.jks \
             -storepass "$STORE_PASS" \
