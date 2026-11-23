@@ -3,8 +3,7 @@ name: Build Repair Pro APK and AAB
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -21,10 +20,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Find Android Project
         id: project
@@ -60,9 +59,7 @@ jobs:
           if project is None:
               target.mkdir(exist_ok=True)
 
-              archives = sorted(
-                  root.rglob("*.zip")
-              )
+              archives = sorted(root.rglob("*.zip"))
 
               for i, archive in enumerate(archives):
                   if target in archive.parents:
@@ -77,18 +74,22 @@ jobs:
                               path = (
                                   dest / member.filename
                               ).resolve()
+
                               if not path.is_relative_to(
                                   dest.resolve()
                               ):
                                   raise ValueError(
                                       "Unsafe ZIP path"
                                   )
+
                           z.extractall(dest)
+
                   except Exception as e:
                       print("ZIP skipped:", e)
                       continue
 
                   project = find_android(dest)
+
                   if project:
                       break
 
@@ -112,10 +113,10 @@ jobs:
           test -d "$ANDROID_HOME"
           echo "Android SDK ready"
 
-      - name: Setup Gradle
+      - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.13"
+          gradle-version: '9.3.1'
 
       - name: Prepare Gradle
         working-directory: ${{ steps.project.outputs.dir }}
@@ -123,18 +124,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -f gradlew ] && \
-             [ -f gradle/wrapper/gradle-wrapper.jar ] && \
-             [ -f gradle/wrapper/gradle-wrapper.properties ]; then
+          gradle --version
 
-            chmod +x gradlew
-            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
-
-          else
-
-            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
-
-          fi
+          echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
 
       - name: Automatic App Version
         id: version
@@ -151,6 +143,7 @@ jobs:
           from pathlib import Path
 
           run = int(os.environ["RUN_NUMBER"])
+
           version = f"2.0.{run}"
           code = 200000 + run
 
@@ -176,6 +169,7 @@ jobs:
           code_pattern = (
               r'\bversionCode\s*(?:=\s*)?\d+'
           )
+
           name_pattern = (
               r'\bversionName\s*(?:=\s*)?'
               r'["\'][^"\']*["\']'
@@ -212,7 +206,7 @@ jobs:
               print("Version updated:", version)
           else:
               print(
-                  "Version fields are dynamic or missing."
+                  "Version fields dynamic or missing."
               )
               print(
                   "Keeping original Gradle configuration."
@@ -241,6 +235,7 @@ jobs:
           if [ -s app/google-services.json ]; then
             python3 -m json.tool \
               app/google-services.json > /dev/null
+
             echo "Firebase JSON valid"
           else
             echo "::warning::Firebase JSON not found"
@@ -295,7 +290,8 @@ jobs:
           "$GRADLE_CMD" \
             --no-daemon \
             :app:assembleDebug \
-            --stacktrace
+            --stacktrace \
+            --no-configuration-cache
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
