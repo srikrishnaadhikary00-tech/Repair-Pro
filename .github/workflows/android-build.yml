@@ -220,28 +220,41 @@ jobs:
               out.write(f"name={version}\n")
           PY
 
-      - name: Restore Firebase Configuration
+      - name: Restore and Validate Firebase Configuration
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         env:
           FIREBASE_JSON: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
           set -euo pipefail
-
           if [ -n "$FIREBASE_JSON" ]; then
-            printf '%s' "$FIREBASE_JSON" \
-              | base64 --decode \
-              > app/google-services.json
+            printf '%s' "$FIREBASE_JSON" | base64 --decode > app/google-services.json
           fi
-
-          if [ -s app/google-services.json ]; then
-            python3 -m json.tool \
-              app/google-services.json > /dev/null
-
-            echo "Firebase JSON valid"
-          else
-            echo "::warning::Firebase JSON not found"
+          if [ ! -s app/google-services.json ]; then
+            echo "::error::Missing app/google-services.json. Set GOOGLE_SERVICES_JSON_BASE64 or include the file in the project."
+            exit 1
           fi
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          data = json.loads(Path('app/google-services.json').read_text())
+          clients = data.get('client', [])
+          if not clients:
+              raise SystemExit('::error::Firebase JSON has no Android clients')
+          for client in clients:
+              info = client.get('client_info', {}).get('android_client_info', {})
+              package = info.get('package_name', '')
+              oauth = client.get('oauth_client', [])
+              android = [c for c in oauth if c.get('client_type') == 1]
+              web = [c for c in oauth if c.get('client_type') == 3]
+              print(f'Firebase Android package: {package}')
+              print(f'Android OAuth clients: {len(android)}; Web OAuth clients: {len(web)}')
+              if not package:
+                  raise SystemExit('::error::Missing Firebase Android package name')
+              if not web:
+                  print('::warning::No Web OAuth client in Firebase JSON; check Google Sign-In setup')
+          print('Firebase JSON parsed successfully')
+          PYCODE
 
       - name: Prepare Debug Keystore
         working-directory: ${{ steps.project.outputs.dir }}
@@ -544,4 +557,5 @@ jobs:
 
             echo ""
             echo "Download files from GitHub Artifacts."
+            echo "Google Sign-In must also be tested on-device with the correct package, OAuth client and signing SHA fingerprints."
           } >> "$GITHUB_STEP_SUMMARY"
