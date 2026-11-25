@@ -19,6 +19,20 @@ jobs:
           unzip -q Repair-Pro-3.0-GitHub-Build.zip 'supabase/*' -d backend
           test -f backend/supabase/functions/repair-pro-api/index.ts
 
+      - name: Fix Netlify CORS
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("backend/supabase/functions/_shared/firebase-auth.ts")
+          s = p.read_text()
+          origin = "https://incandescent-churros-f9b269.netlify.app"
+          marker = "const ALLOWED_ORIGINS = new Set(["
+          assert marker in s
+          if origin not in s:
+              s = s.replace(marker, marker + '\n  "' + origin + '",', 1)
+          p.write_text(s)
+          PY
+
       - name: Setup Supabase
         uses: supabase/setup-cli@v1
         with:
