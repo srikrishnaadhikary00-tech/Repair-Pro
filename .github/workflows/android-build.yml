@@ -117,6 +117,7 @@ jobs:
           printf '\nSUPABASE_ANON_KEY=%s\n' "$SUPABASE_ANON_KEY" >> .env
           echo "Supabase configuration ready"
 
+      - name: Automatic App Version
         id: version
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
