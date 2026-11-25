@@ -30,7 +30,8 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
           supabase functions deploy repair-pro-api \
-            --project-ref xuakzzjtcgcvudkgxpbd
+            --remote=xuakzzjtcgcvudkgxpbd \
+            --yes
 
       - name: Verify Deployment
         working-directory: backend
@@ -38,4 +39,4 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
         run: |
           supabase functions list \
-            --project-ref xuakzzjtcgcvudkgxpbd
+            --remote=xuakzzjtcgcvudkgxpbd
