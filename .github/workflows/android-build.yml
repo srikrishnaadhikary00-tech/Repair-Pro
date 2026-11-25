@@ -1,4 +1,3 @@
-
 name: Build Repair Pro APK and AAB
 
 on:
@@ -104,7 +103,20 @@ jobs:
           gradle --version
           echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
 
-      - name: Automatic App Version
+      - name: Configure Supabase
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        env:
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::Missing SUPABASE_ANON_KEY GitHub secret"
+            exit 1
+          fi
+          printf '\nSUPABASE_ANON_KEY=%s\n' "$SUPABASE_ANON_KEY" >> .env
+          echo "Supabase configuration ready"
+
         id: version
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -327,6 +339,8 @@ jobs:
         env:
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
         run: |
+          set -euo pipefail
+
           keytool -list -v \
             -keystore my-upload-key.jks \
             -storepass "$STORE_PASS" \
