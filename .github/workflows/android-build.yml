@@ -57,6 +57,29 @@ jobs:
               out.write(f"dir={project}\n")
           PY
 
+      - name: Apply KSP Version Fix
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import re
+          from pathlib import Path
+
+          path = Path("gradle/libs.versions.toml")
+          content = path.read_text()
+          pattern = r'(?m)^(googleDevtoolsKsp\s*=\s*")([^"\n]+)(")'
+          matches = list(re.finditer(pattern, content))
+          if len(matches) != 1:
+              raise SystemExit("Expected exactly one KSP version declaration")
+          old = matches[0].group(2)
+          if old not in ("2.3.5", "2.3.14"):
+              raise SystemExit(f"Unexpected KSP version {old}; review compatibility before changing")
+          updated = re.sub(pattern, lambda m: m.group(1) + "2.3.14" + m.group(3), content)
+          path.write_text(updated)
+          print(f"KSP version: {old} -> 2.3.14")
+          PYCODE
+
       - name: Check Android SDK
         shell: bash
         run: |
