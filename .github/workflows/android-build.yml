@@ -34,30 +34,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           python3 - <<'PY'
           import os
           import zipfile
           from pathlib import Path
-
           root = Path.cwd()
           target = root / "_android_source"
-
-          def find_android(base):
-              for name in (
-                  "settings.gradle.kts",
-                  "settings.gradle"
-              ):
-                  for f in sorted(base.rglob(name)):
-                      p = f.parent
-                      if (
-                          (p / "app/build.gradle").exists()
-                          or
-                          (p / "app/build.gradle.kts").exists()
-                      ):
-                          return p.resolve()
-              return None
-
           archive = root / "Repair-Pro-3.0-GitHub-Build.zip"
           if not archive.is_file():
               raise SystemExit("Expected Repair-Pro-3.0-GitHub-Build.zip in repository root")
@@ -67,18 +49,11 @@ jobs:
                   if not (target / member.filename).resolve().is_relative_to(target.resolve()):
                       raise ValueError("Unsafe ZIP path")
               z.extractall(target)
-          project = find_android(target)
-
+          project = next((f.parent.resolve() for name in ("settings.gradle.kts", "settings.gradle") for f in sorted(target.rglob(name)) if (f.parent / "app/build.gradle").exists() or (f.parent / "app/build.gradle.kts").exists()), None)
           if project is None:
-              raise SystemExit(
-                  "::error::Android project not found"
-              )
-
+              raise SystemExit("::error::Android project not found")
           print("Android project:", project)
-
-          with open(
-              os.environ["GITHUB_OUTPUT"], "a"
-          ) as out:
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"dir={project}\n")
           PY
 
@@ -125,78 +100,25 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
-
           python3 - <<'PY'
           import os
           import re
           from pathlib import Path
-
           run = int(os.environ["RUN_NUMBER"])
           version = f"3.0.{run}"
           code = 300000 + run
-
-          files = [
-              Path("app/build.gradle.kts"),
-              Path("app/build.gradle")
-          ]
-
-          file = next(
-              (f for f in files if f.exists()),
-              None
-          )
-
+          file = next((f for f in [Path("app/build.gradle.kts"), Path("app/build.gradle")] if f.exists()), None)
           if file is None:
-              raise SystemExit(
-                  "Android app Gradle file missing"
-              )
-
+              raise SystemExit("Android app Gradle file missing")
           content = file.read_text()
           kotlin = file.suffix == ".kts"
-
-          code_pattern = (
-              r'\bversionCode\s*(?:=\s*)?\d+'
-          )
-
-          name_pattern = (
-              r'\bversionName\s*(?:=\s*)?'
-              r'["\'][^"\']*["\']'
-          )
-
-          code_value = (
-              f"versionCode = {code}"
-              if kotlin else
-              f"versionCode {code}"
-          )
-
-          name_value = (
-              f'versionName = "{version}"'
-              if kotlin else
-              f'versionName "{version}"'
-          )
-
-          updated, c = re.subn(
-              code_pattern,
-              code_value,
-              content,
-              count=1
-          )
-
-          updated, n = re.subn(
-              name_pattern,
-              name_value,
-              updated,
-              count=1
-          )
-
-          if c and n:
-              file.write_text(updated)
-              print("Version updated:", version)
-          else:
+          updated, c = re.subn(r'\bversionCode\s*(?:=\s*)?\d+', f"versionCode = {code}" if kotlin else f"versionCode {code}", content, count=1)
+          updated, n = re.subn(r'\bversionName\s*(?:=\s*)?["\'][^"\']*["\']', f'versionName = "{version}"' if kotlin else f'versionName "{version}"', updated, count=1)
+          if not (c and n):
               raise SystemExit("Cannot update version fields")
-
-          with open(
-              os.environ["GITHUB_OUTPUT"], "a"
-          ) as out:
+          file.write_text(updated)
+          print("Version updated:", version)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write(f"name={version}\n")
           PY
 
@@ -243,28 +165,17 @@ jobs:
           DEBUG_KEY: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-
           mkdir -p "$HOME/.android"
-
           if [ -n "$DEBUG_KEY" ]; then
-            printf '%s' "$DEBUG_KEY" \
-              | base64 --decode \
-              > "$HOME/.android/debug.keystore"
+            printf '%s' "$DEBUG_KEY" | base64 --decode > "$HOME/.android/debug.keystore"
           fi
-
           if [ ! -s "$HOME/.android/debug.keystore" ]; then
             keytool -genkeypair \
               -keystore "$HOME/.android/debug.keystore" \
-              -storepass android \
-              -keypass android \
-              -alias androiddebugkey \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US" \
-              -noprompt
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US" -noprompt
           fi
-
           echo "Debug keystore ready"
 
       - name: Restore Project Debug Keystore
@@ -272,23 +183,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          cp "$HOME/.android/debug.keystore" \
-            debug.keystore
-
-          cp "$HOME/.android/debug.keystore" \
-            app/debug.keystore
-
+          cp "$HOME/.android/debug.keystore" debug.keystore
+          cp "$HOME/.android/debug.keystore" app/debug.keystore
           echo "Project debug keystore ready"
 
       - name: Show Debug SHA Fingerprints
         shell: bash
         run: |
-          keytool -list -v \
-            -keystore "$HOME/.android/debug.keystore" \
-            -storepass android \
-            -alias androiddebugkey \
-            | grep -E 'SHA1:|SHA256:'
+          keytool -list -v -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey | grep -E 'SHA1:|SHA256:'
 
       - name: Check Release Signing
         id: signing
@@ -299,10 +202,7 @@ jobs:
           KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-
-          if [ -n "$KEYSTORE" ] && \
-             [ -n "$STORE_PASS" ] && \
-             [ -n "$KEY_PASS" ]; then
+          if [ -n "$KEYSTORE" ] && [ -n "$STORE_PASS" ] && [ -n "$KEY_PASS" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -319,18 +219,9 @@ jobs:
           KEY_PASS: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-
-          printf '%s' "$KEYSTORE" \
-            | base64 --decode \
-            > my-upload-key.jks
-
+          printf '%s' "$KEYSTORE" | base64 --decode > my-upload-key.jks
           chmod 600 my-upload-key.jks
-
-          keytool -list \
-            -keystore my-upload-key.jks \
-            -storepass "$STORE_PASS" \
-            -alias upload
-
+          keytool -list -keystore my-upload-key.jks -storepass "$STORE_PASS" -alias upload
           echo "Release keystore ready"
 
       - name: Show Release SHA Fingerprints
@@ -340,20 +231,16 @@ jobs:
         env:
           STORE_PASS: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
         run: |
-          set -euo pipefail
-
-          keytool -list -v \
-            -keystore my-upload-key.jks \
-            -storepass "$STORE_PASS" \
-            -alias upload \
-            | grep -E 'SHA1:|SHA256:'
+          keytool -list -v -keystore my-upload-key.jks -storepass "$STORE_PASS" \
+            -alias upload | grep -E 'SHA1:|SHA256:'
 
       - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
+        env:
+          JAVA_TOOL_OPTIONS: -Djava.awt.headless=true
         run: |
           set -euo pipefail
-
           "$GRADLE_CMD" \
             --no-daemon \
             :app:assembleDebug \
@@ -362,6 +249,8 @@ jobs:
             --no-build-cache \
             --no-parallel \
             --max-workers=1 \
+            -Djava.awt.headless=true \
+            -Pkotlin.compiler.execution.strategy=in-process \
             -Pksp.incremental=false
 
       - name: Upload Debug APK
@@ -377,13 +266,13 @@ jobs:
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         env:
+          JAVA_TOOL_OPTIONS: -Djava.awt.headless=true
           KEYSTORE_PATH: ${{ steps.project.outputs.dir }}/my-upload-key.jks
           STORE_PASSWORD: ${{ secrets.REPAIR_PRO_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.REPAIR_PRO_KEY_PASSWORD }}
           KEY_ALIAS: upload
         run: |
           set -euo pipefail
-
           "$GRADLE_CMD" \
             --no-daemon \
             :app:assembleRelease \
@@ -393,6 +282,8 @@ jobs:
             --no-build-cache \
             --no-parallel \
             --max-workers=1 \
+            -Djava.awt.headless=true \
+            -Pkotlin.compiler.execution.strategy=in-process \
             -Pksp.incremental=false
 
       - name: Verify Release APK
@@ -401,23 +292,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          APK="$(find app/build/outputs/apk/release \
-            -type f -name '*.apk' -print -quit)"
-
+          APK="$(find app/build/outputs/apk/release -type f -name '*.apk' -print -quit)"
           test -n "$APK"
-
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" \
-            -type f -name apksigner \
-            | sort -V | tail -1)"
-
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
           test -n "$APKSIGNER"
-
-          "$APKSIGNER" verify \
-            --verbose \
-            --print-certs \
-            "$APK"
-
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
           echo "Release APK verified"
 
       - name: Verify Release AAB
@@ -426,27 +305,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          AAB="$(find app/build/outputs/bundle/release \
-            -type f -name '*.aab' -print -quit)"
-
+          AAB="$(find app/build/outputs/bundle/release -type f -name '*.aab' -print -quit)"
           if [ -z "$AAB" ]; then
             echo "::error::Release AAB not found"
             exit 1
           fi
-
           echo "Checking AAB signature..."
-
-          jarsigner -verify \
-            -verbose \
-            -certs \
-            "$AAB" \
-            > aab-verification.log 2>&1 || {
-              cat aab-verification.log
-              echo "::error::AAB verification failed"
-              exit 1
-            }
-
+          jarsigner -verify -verbose -certs "$AAB" > aab-verification.log 2>&1 || {
+            cat aab-verification.log
+            echo "::error::AAB verification failed"
+            exit 1
+          }
           if grep -q "jar verified" aab-verification.log; then
             echo "AAB signature verification completed"
           else
@@ -454,40 +323,20 @@ jobs:
             echo "::error::AAB signature not verified"
             exit 1
           fi
-
           echo "Checking AAB structure..."
-
           python3 - "$AAB" <<'PY'
           import sys
           import zipfile
-
-          path = sys.argv[1]
-
-          with zipfile.ZipFile(path) as z:
+          with zipfile.ZipFile(sys.argv[1]) as z:
               bad = z.testzip()
-
               if bad is not None:
-                  raise SystemExit(
-                      f"Corrupted AAB entry: {bad}"
-                  )
-
-              names = set(z.namelist())
-
-              required = {
-                  "BundleConfig.pb",
-                  "base/manifest/AndroidManifest.xml"
-              }
-
-              missing = required - names
-
+                  raise SystemExit(f"Corrupted AAB entry: {bad}")
+              required = {"BundleConfig.pb", "base/manifest/AndroidManifest.xml"}
+              missing = required - set(z.namelist())
               if missing:
-                  raise SystemExit(
-                      f"Missing AAB entries: {missing}"
-                  )
-
+                  raise SystemExit(f"Missing AAB entries: {missing}")
           print("AAB ZIP structure valid")
           PY
-
           echo "Release AAB verified"
 
       - name: Upload Release APK
@@ -513,10 +362,7 @@ jobs:
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
-          rm -f my-upload-key.jks
-          rm -f debug.keystore
-          rm -f app/debug.keystore
-          rm -f aab-verification.log
+          rm -f my-upload-key.jks debug.keystore app/debug.keystore aab-verification.log
           echo "Temporary signing files removed"
 
       - name: Build Summary
@@ -535,14 +381,12 @@ jobs:
             echo ""
             echo "Debug APK: Available"
             echo ""
-
             if [ "$SIGNING_READY" = "true" ]; then
               echo "Release APK: Available"
               echo "Release AAB: Available"
             else
               echo "Release signing not configured."
             fi
-
             echo ""
             echo "Download files from GitHub Artifacts."
             echo "Google Sign-In must also be tested on-device with the correct package, OAuth client and signing SHA fingerprints."
